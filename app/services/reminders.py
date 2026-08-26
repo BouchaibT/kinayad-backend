@@ -1,0 +1,264 @@
+# -*- coding: utf-8 -*-
+"""
+Service de rappels — cœeur de Kinayad.
+
+Deux responsabilités :
+1. Planifier les rappels à la prise de RDV (transaction BEGIN/COMMIT).
+2. Worker : parcourir `reminders_scheduled` et envoyer les rappels dus.
+"""
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app import models
+from app.config import settings
+from app.services import whatsapp
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# 1. Création d'un RDV + planification 24h / 2h (en transaction)
+# ---------------------------------------------------------------------------
+
+
+def create_appointment_and_schedule(
+    db: Session,
+    *,
+    tenant_id: uuid.UUID,
+    practitioner_id: uuid.UUID | None,
+    wa_id: str,
+    client_name: str | None,
+    phone_e164: str | None,
+    preferred_language: str,
+    start_at: datetime,
+    duration_min: int = 30,
+    notes: str | None = None,
+) -> tuple[models.Appointment, list[models.ReminderScheduled]]:
+    """Crée le RDV + la file des rappels, tout en une transaction.
+
+    Retourne (appointment, [reminders]). Idempotent grâce à la contrainte
+    UNIQUE (appointment_id, type) : si un rappel 24h existe déjà pour ce RDV,
+    l'INSERT lève une exception unique — l'appelant peut choisir d'ignorer.
+    """
+    # Récupérer ou créer le client (upsert léger sur wa_id)
+    client = _get_or_create_client(db, tenant_id, wa_id, client_name, phone_e164, preferred_language)
+
+    appointment = models.Appointment(
+        tenant_id=tenant_id,
+        practitioner_id=practitioner_id,
+        client_id=client.id,
+        start_at=start_at,
+        duration_min=duration_min,
+        status=models.AppointmentStatus.CONFIRMED,
+        notes=notes,
+    )
+    db.add(appointment)
+    # flush pour obtenir l'id sans commit (reste dans la transaction)
+    db.flush()
+
+    reminders = [
+        _schedule(db, appointment, models.ReminderType.REMINDER_24H, start_at - timedelta(hours=settings.reminder_24h_hours)),
+        _schedule(db, appointment, models.ReminderType.REMINDER_2H, start_at - timedelta(hours=settings.reminder_2h_hours)),
+    ]
+    db.commit()
+    db.refresh(appointment)
+    return appointment, reminders
+
+
+def _get_or_create_client(
+    db: Session, tenant_id, wa_id, name, phone_e164, preferred_language
+) -> models.Client:
+    existing = db.scalar(
+        select(models.Client).where(
+            models.Client.tenant_id == tenant_id, models.Client.wa_id == wa_id
+        )
+    )
+    if existing:
+        if name and not existing.name:
+            existing.name = name
+        if phone_e164:
+            existing.phone_e164 = phone_e164
+        return existing
+    client = models.Client(
+        tenant_id=tenant_id,
+        wa_id=wa_id,
+        name=name,
+        phone_e164=phone_e164,
+        preferred_language=preferred_language or "fr",
+    )
+    db.add(client)
+    db.flush()
+    return client
+
+
+def _schedule(
+    db: Session, appointment: models.Appointment, rtype: models.ReminderType, send_at: datetime
+) -> models.ReminderScheduled:
+    r = models.ReminderScheduled(
+        tenant_id=appointment.tenant_id,
+        appointment_id=appointment.id,
+        client_id=appointment.client_id,
+        type=rtype,
+        send_at=send_at,
+        status=models.ReminderStatus.PENDING,
+    )
+    db.add(r)
+    return r
+
+
+# ---------------------------------------------------------------------------
+# 2. Worker — sélection des rappels dus + envoi
+# ---------------------------------------------------------------------------
+
+
+def due_reminders(db: Session, now: datetime | None = None) -> list[models.ReminderScheduled]:
+    """Sélectionne les rappels prêts à envoyer (ni opt-out, ni déjà envoyé)."""
+    now = now or datetime.now(timezone.utc)
+    stmt = (
+        select(models.ReminderScheduled)
+        .join(models.Client, models.Client.id == models.ReminderScheduled.client_id)
+        .where(
+            models.ReminderScheduled.status.in_(
+                [models.ReminderStatus.PENDING, models.ReminderStatus.RETRYING]
+            ),
+            models.ReminderScheduled.send_at <= now,
+            models.ReminderScheduled.attempts < models.ReminderScheduled.max_attempts,
+            models.Client.opted_out_at.is_(None),  # JAMAIS de rappel à un patient "stop"
+        )
+        .limit(50)
+    )
+    return list(db.scalars(stmt).unique())
+
+
+def send_due_reminders(db: Session) -> int:
+    """Envoie tous les rappels dus. Retourne le nombre de rappels tentés.
+
+    Idempotence (query + update atomique) :
+    - la colonne reminder_X_sent_at du RDV n'est positionnée QUE si vide.
+    - l'UPDATE du rappel passe par un WHERE status IN (pending, retrying).
+    """
+    sent = 0
+    for r in due_reminders(db):
+        try:
+            _send_one(db, r)
+            sent += 1
+        except Exception:  # noqa: BLE001 — on attrape tout pour ne pas casser le worker
+            _handle_failure(db, r)
+        db.commit()
+    return sent
+
+
+def _send_one(db: Session, r: models.ReminderScheduled) -> None:
+    appointment = r.appointment
+    client = r.client
+    tenant = r.tenant
+
+    # Optimistic idempotence : on n'envoie que si ce rappel n'a pas déjà été marqué
+    marker = appointment.reminder_sent(r.type)
+    if marker is not None:
+        _mark_skipped(db, r, f"already sent at {marker.isoformat()}")
+        return
+
+    # Construire le message (template approuvé selon le type et la langue)
+    text = _build_reminder_text(appointment, r.type)
+    template_name = _template_for(r.type, client.preferred_language)
+    variables = _template_variables(appointment, r.type)
+
+    if settings.demo_mode:
+        # En démo on ne marque pas réel l'envoi ; on simule juste le flux.
+        _mark_sent(db, r, appointment, f"DEMO-{r.type}-{client.wa_id}")
+        return
+
+    wamid = whatsapp.send_template_reminder(
+        tenant, client.wa_id, template_name, variables, client.preferred_language
+    )
+    _mark_sent(db, r, appointment, wamid)
+    if text:
+        logger.info("Rappel %s envoyé -> %s (wamid=%s)", r.type.value, client.wa_id, wamid)
+
+
+def _handle_failure(db: Session, r: models.ReminderScheduled) -> None:
+    r.attempts += 1
+    r.last_attempt_at = datetime.now(timezone.utc)
+    if r.attempts >= r.max_attempts:
+        r.status = models.ReminderStatus.FAILED
+        logger.warning("Rappel %s marqué FAILED (max attempts)", r.id)
+    else:
+        r.status = models.ReminderStatus.RETRYING
+        logger.warning("Rappel %s en cours de retry (attempt %s/%s)", r.id, r.attempts, r.max_attempts)
+
+
+# ---------------------------------------------------------------------------
+# Marqueurs
+# ---------------------------------------------------------------------------
+
+
+def _mark_sent(
+    db: Session,
+    r: models.ReminderScheduled,
+    appointment: models.Appointment,
+    wamid: str,
+) -> None:
+    r.status = models.ReminderStatus.SENT
+    r.wamid = wamid
+    r.processed_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    # Le marqueur sur le RDV devient la source d'idempotence principale
+    if r.type == models.ReminderType.REMINDER_24H:
+        appointment.reminder_24h_sent_at = now
+    elif r.type == models.ReminderType.REMINDER_2H:
+        appointment.reminder_2h_sent_at = now
+    elif r.type == models.ReminderType.CONFIRMATION:
+        appointment.confirmation_sent_at = now
+
+
+def _mark_skipped(db: Session, r: models.ReminderScheduled, reason: str) -> None:
+    r.status = models.ReminderStatus.SKIPPED
+    r.error_message = reason
+    r.processed_at = datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Construction texte + template
+# ---------------------------------------------------------------------------
+
+
+def _template_for(rtype: models.ReminderType, language: str) -> str:
+    # Noms de templates à créer dans votre console Meta (par langue).
+    base = {
+        models.ReminderType.REMINDER_24H: "rappel_rdv_24h",
+        models.ReminderType.REMINDER_2H: "rappel_rdv_2h",
+        models.ReminderType.CONFIRMATION: "confirmation_rdv",
+    }[rtype]
+    if language in ("ar", "ar_MA"):
+        return f"{base}_ar"
+    return base
+
+
+def _template_variables(appointment: models.Appointment, rtype: models.ReminderType) -> list[str]:
+    """Variables {{1}}..{{n}} du template (à aligner sur ce que Meta attend)."""
+    p = appointment.practitioner
+    cabinet = p.cabinet_name or p.name if p else ""
+    start = appointment.start_at
+    date_str = start.strftime("%d/%m/%Y")
+    time_str = start.strftime("%H:%M")
+    return [cabinet or "votre praticien", date_str, time_str]
+
+
+def _build_reminder_text(appointment: models.Appointment, rtype: models.ReminderType) -> str:
+    # Réservé au mode démo / fenêtre client. En prod sortant on utilise un template.
+    p = appointment.practitioner
+    cabinet = p.cabinet_name or p.name if p else "votre praticien"
+    heure = appointment.start_at.strftime("%H:%M")
+    date = appointment.start_at.strftime("%d/%m/%Y")
+    if rtype == models.ReminderType.REMINDER_24H:
+        return f"Bonjour ! RDV à {cabinet} demain à {heure}. Pour confirmer ou reporter, répondez simplement."
+    if rtype == models.ReminderType.REMINDER_2H:
+        return f"Rappel : votre RDV à {cabinet} est aujourd'hui à {heure}. Merci de confirmer votre présence."
+    return f"RDV confirmé le {date} à {heure} chez {cabinet}."

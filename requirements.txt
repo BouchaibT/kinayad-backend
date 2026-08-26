@@ -1,0 +1,21 @@
+# API (FastAPI) + ORM (SQLAlchemy)
+fastapi>=0.111,<1.0
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0,<2.1
+psycopg[binary]>=3.1
+
+# Schémas / validation / config
+pydantic>=2.6
+pydantic-settings>=2.2
+
+# Appels HTTP vers l'API Cloud Meta
+httpx>=0.27
+
+# Chiffrement du token WhatsApp (phase 2)
+cryptography>=42
+
+# Migrations (recommandé dès que la 1ère prod approche)
+alembic>=1.13
+
+# Multi-tenancy RLS helper (optionnel, phase 2/3)
+# sqlalchemy-multitenant ... (à installer selon votre choix)

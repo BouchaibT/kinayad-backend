@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# Kinayad — Blueprint Render (Infrastructure as Code)
+# Déployer : pousser vers GitHub puis "New Blueprint" dans le dashboard Render
+# en pointant sur CE dépôt. Render créera : une base Postgres + API + Worker.
+#
+# Important : l'URL du webhook Meta sera
+#     https://<api-service-name>.onrender.com/webhook
+# (nom de service = "kinayad-api" → https://kinayad-api.onrender.com/webhook)
+# ---------------------------------------------------------------------------
+services:
+  # ===================== Service WEB (API FastAPI) =====================
+  - type: web
+    name: kinayad-api
+    runtime: docker
+    plan: starter                       # ajuster selon budget (free = free)
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    # Commande exécutée au démarrage du conteneur.
+    # run.sh fait : ajustement DATABASE_URL + seed idempotent + uvicorn.
+    startCommand: bash run.sh
+    envVars:
+      - key: DEMO_MODE
+        value: "true"                   # ← passer à "false" pour envoyer réellement
+      - key: API_KEYS
+        value: your-strong-api-key-change-me
+      - key: ENCRYPTION_KEY_B64
+        sync: false                     # à renseigner manuellement (secret)
+      - key: CAMK_SECRET_KEY
+        sync: false
+      - key: META_VERIFY_TOKEN
+        value: your-verify-token-change-me
+      - key: META_WEBHOOK_SECRET
+        sync: false                     # secret à renseigner
+      - key: META_ACCESS_TOKEN
+        sync: false                     # secret
+      - key: META_PHONE_ID
+        sync: false
+      - key: CORS_ORIGINS
+        value: http://localhost:3000,http://localhost:5173,https://kinayad-api.onrender.com
+      # DATABASE_URL : fournie automatiquement par Render vers la DB ci-dessous
+
+  # ===================== Service WORKER (rappels) =====================
+  - type: worker
+    name: kinayad-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    # Commande de démarrage du worker (remplace le CMD Docker par défaut)
+    startCommand: python -m app.worker
+    envVars:
+      - key: DEMO_MODE
+        value: "true"
+      - key: API_KEYS
+        value: your-strong-api-key-change-me
+      - key: ENCRYPTION_KEY_B64
+        sync: false
+      - key: CAMK_SECRET_KEY
+        sync: false
+      - key: META_VERIFY_TOKEN
+        value: your-verify-token-change-me
+      - key: META_WEBHOOK_SECRET
+        sync: false
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_PHONE_ID
+        sync: false
+      # Bascule prod : passer DEMO_MODE à false sur LES DEUX services.
+
+databases:
+  - name: kinayad-db
+    plan: basic                      # Postgres managé par Render
+    databaseName: kinayad
+    user: kinayad
