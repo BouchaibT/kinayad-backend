@@ -165,22 +165,11 @@ def _send_one(db: Session, r: models.ReminderScheduled) -> None:
         _mark_skipped(db, r, f"already sent at {marker.isoformat()}")
         return
 
-    # Construire le message (template approuvé selon le type et la langue)
     text = _build_reminder_text(appointment, r.type)
-    template_name = _template_for(r.type, client.preferred_language)
-    variables = _template_variables(appointment, r.type)
-
-    if settings.demo_mode:
-        # En démo on ne marque pas réel l'envoi ; on simule juste le flux.
-        _mark_sent(db, r, appointment, f"DEMO-{r.type}-{client.wa_id}")
-        return
-
-    wamid = whatsapp.send_template_reminder(
-        tenant, client.wa_id, template_name, variables, client.preferred_language
-    )
-    _mark_sent(db, r, appointment, wamid)
-    if text:
-        logger.info("Rappel %s envoyé -> %s (wamid=%s)", r.type.value, client.wa_id, wamid)
+    # whatsapp.send_text_reminder gère lui-même le mode démo (aucun envoi réel).
+    message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
+    _mark_sent(db, r, appointment, message_id)
+    logger.info("Rappel %s envoyé -> %s (id=%s)", r.type.value, client.wa_id, message_id)
 
 
 def _handle_failure(db: Session, r: models.ReminderScheduled) -> None:
@@ -225,38 +214,24 @@ def _mark_skipped(db: Session, r: models.ReminderScheduled, reason: str) -> None
 
 
 # ---------------------------------------------------------------------------
-# Construction texte + template
+# Construction du texte du rappel (message libre — pas de template à faire approuver)
 # ---------------------------------------------------------------------------
 
 
-def _template_for(rtype: models.ReminderType, language: str) -> str:
-    # Noms de templates à créer dans votre console Meta (par langue).
-    base = {
-        models.ReminderType.REMINDER_24H: "rappel_rdv_24h",
-        models.ReminderType.REMINDER_2H: "rappel_rdv_2h",
-        models.ReminderType.CONFIRMATION: "confirmation_rdv",
-    }[rtype]
-    if language in ("ar", "ar_MA"):
-        return f"{base}_ar"
-    return base
-
-
-def _template_variables(appointment: models.Appointment, rtype: models.ReminderType) -> list[str]:
-    """Variables {{1}}..{{n}} du template (à aligner sur ce que Meta attend)."""
-    p = appointment.practitioner
-    cabinet = p.cabinet_name or p.name if p else ""
-    start = appointment.start_at
-    date_str = start.strftime("%d/%m/%Y")
-    time_str = start.strftime("%H:%M")
-    return [cabinet or "votre praticien", date_str, time_str]
-
-
 def _build_reminder_text(appointment: models.Appointment, rtype: models.ReminderType) -> str:
-    # Réservé au mode démo / fenêtre client. En prod sortant on utilise un template.
     p = appointment.practitioner
     cabinet = p.cabinet_name or p.name if p else "votre praticien"
     heure = appointment.start_at.strftime("%H:%M")
     date = appointment.start_at.strftime("%d/%m/%Y")
+    language = appointment.client.preferred_language if appointment.client else "fr"
+
+    if language in ("ar", "ar_MA"):
+        if rtype == models.ReminderType.REMINDER_24H:
+            return f"مرحبا! لديك موعد غدا الساعة {heure} في {cabinet}. للتأكيد أو التأجيل، أجب ببساطة على هذه الرسالة."
+        if rtype == models.ReminderType.REMINDER_2H:
+            return f"تذكير: موعدك اليوم الساعة {heure} في {cabinet}. يرجى تأكيد حضورك."
+        return f"تم تأكيد الموعد يوم {date} الساعة {heure} في {cabinet}."
+
     if rtype == models.ReminderType.REMINDER_24H:
         return f"Bonjour ! RDV à {cabinet} demain à {heure}. Pour confirmer ou reporter, répondez simplement."
     if rtype == models.ReminderType.REMINDER_2H:

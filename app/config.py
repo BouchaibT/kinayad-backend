@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # --- Mot de passe du tableau de bord public (distinct des clés API internes) ---
     dashboard_password: str = ""
 
+    # --- Evolution API (pont WhatsApp Web / Baileys auto-hébergé, pas l'API Meta) ---
+    evolution_api_url: str = ""
+    evolution_api_key: str = ""
+
     # --- Objets rappels (heures avant le RDV) ---
     reminder_24h_hours: int = 24
     reminder_2h_hours: int = 2

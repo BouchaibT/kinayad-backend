@@ -83,3 +83,17 @@ def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
 
     db.commit()
     return TenantOut(tenant_id=tenant.id, slug=tenant.slug, practitioner_id=practitioner.id)
+
+
+class EvolutionLink(BaseModel):
+    instance: str = Field(..., description="Nom de l'instance Evolution API (WhatsApp connecté)")
+
+
+@router.patch("/tenants/{slug}/evolution")
+def link_evolution_instance(slug: str, payload: EvolutionLink, db: Session = Depends(get_db)):
+    tenant = db.scalar(select(models.Tenant).where(models.Tenant.slug == slug))
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Cabinet introuvable")
+    tenant.settings = {**(tenant.settings or {}), "evolution_instance": payload.instance}
+    db.commit()
+    return {"slug": tenant.slug, "evolution_instance": payload.instance}
