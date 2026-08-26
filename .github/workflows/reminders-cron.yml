@@ -1,0 +1,16 @@
+name: Envoi des rappels WhatsApp (cron gratuit)
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Déclencher l'envoi des rappels dus
+        run: |
+          curl -sf -X POST "https://kinayad-api.onrender.com/internal/run-reminders" \
+            -H "X-API-Key: ${{ secrets.KINAYAD_API_KEY }}" \
+            --max-time 60
