@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     api_keys: list[str] = ["dev-secret-kinayad"]
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
+    # --- Mot de passe du tableau de bord public (distinct des clés API internes) ---
+    dashboard_password: str = ""
+
     # --- Objets rappels (heures avant le RDV) ---
     reminder_24h_hours: int = 24
     reminder_2h_hours: int = 2

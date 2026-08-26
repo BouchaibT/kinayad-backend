@@ -13,15 +13,24 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app import models
+from app.config import settings
 from app.db.session import SessionLocal
 
-router = APIRouter(prefix="/public/dashboard", tags=["dashboard"])
+
+def require_dashboard_key(x_dashboard_key: str = Header(default="")) -> None:
+    if not settings.dashboard_password or x_dashboard_key != settings.dashboard_password:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Mot de passe invalide")
+
+
+router = APIRouter(
+    prefix="/public/dashboard", tags=["dashboard"], dependencies=[Depends(require_dashboard_key)]
+)
 
 
 def _mask(name: str | None, wa_id: str) -> str:
