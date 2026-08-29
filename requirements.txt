@@ -11,6 +11,9 @@ pydantic-settings>=2.2
 # Appels HTTP vers l'API Cloud Meta
 httpx>=0.27
 
+# Cartes visuelles WhatsApp (design Kinayad)
+pillow>=10
+
 # Chiffrement du token WhatsApp (phase 2)
 cryptography>=42
 

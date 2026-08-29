@@ -18,9 +18,16 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.config import settings
-from app.services import whatsapp
+from app.services import cards, whatsapp
 
 logger = logging.getLogger(__name__)
+
+_WEEKDAYS_FR = {0: "Lundi", 1: "Mardi", 2: "Mercredi", 3: "Jeudi", 4: "Vendredi", 5: "Samedi", 6: "Dimanche"}
+_REMINDER_KIND = {
+    models.ReminderType.REMINDER_24H: "Rappel 24h",
+    models.ReminderType.REMINDER_2H: "Rappel 2h",
+    models.ReminderType.CONFIRMATION: "Confirmation",
+}
 
 
 def tenant_zoneinfo(tenant: "models.Tenant | None") -> ZoneInfo:
@@ -205,8 +212,25 @@ def _send_one(db: Session, r: models.ReminderScheduled) -> None:
         return
 
     text = _build_reminder_text(appointment, r.type)
-    # whatsapp.send_text_reminder gère lui-même le mode démo (aucun envoi réel).
-    message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
+    # Carte visuelle (design Kinayad) + texte en légende — expérience patient soignée
+    card = None
+    try:
+        local_start = to_tenant_local(appointment.start_at, tenant)
+        cabinet = appointment.practitioner.cabinet_name or appointment.practitioner.name if appointment.practitioner else "votre cabinet"
+        card = cards.card_reminder_bytes(
+            cabinet_name=cabinet,
+            day=f"{_WEEKDAYS_FR[local_start.weekday()]} {local_start.strftime('%d/%m/%Y')}",
+            time=local_start.strftime("%H:%M"),
+            kind=_REMINDER_KIND.get(r.type, "Rappel"),
+        )
+    except Exception:  # noqa: BLE001 — la carte ne doit jamais casser l'envoi
+        logger.exception("Génération carte rappel échouée (on envoie le texte seul)")
+
+    # whatsapp.send_* gère lui-même le mode démo (aucun envoi réel).
+    if card:
+        message_id = whatsapp.send_media_reminder(tenant, client.wa_id, card, caption=text)
+    else:
+        message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
     _mark_sent(db, r, appointment, message_id)
     logger.info("Rappel %s envoyé -> %s (id=%s)", r.type.value, client.wa_id, message_id)
 

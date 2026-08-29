@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.config import settings
-from app.services import whatsapp
+from app.services import cards, whatsapp
 from app.services.reminders import (
     create_appointment_and_schedule,
     normalize_wa_id,
@@ -94,11 +94,13 @@ def handle_incoming_message(
     _expire_if_stale(state)
 
     text = text.strip()
-    reply = _dispatch(db, tenant, client, state, text)
+    reply_text, card = _dispatch(db, tenant, client, state, text)
 
-    if reply:
-        _send_reply(db, tenant, client, reply)
-    return reply
+    if reply_text:
+        _send_reply(db, tenant, client, reply_text, card=card)
+        client.last_interaction_at = datetime.now(timezone.utc)
+        db.commit()
+    return reply_text
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +108,8 @@ def handle_incoming_message(
 # ---------------------------------------------------------------------------
 
 
-def _dispatch(db, tenant, client, state, text: str) -> str | None:
+def _dispatch(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
+    """Retourne (texte_de_la_réponse, carte_image_optionnelle)."""
     lowered = text.lower()
 
     # Opt-out disponible depuis n'importe quel état
@@ -114,8 +117,8 @@ def _dispatch(db, tenant, client, state, text: str) -> str | None:
         _opt_out(db, tenant, client)
         state.state = "IDLE"
         state.context = {}
-        return _t(client, "🚫 Vous ne recevrez plus de messages. Pour revenir, écrivez-nous à tout moment. 👋",
-                           "🚫 لن تصلك رسائل بعد الآن. للعودة، راسلنا في أي وقت. 👋")
+        return (_t(client, "🚫 Vous ne recevrez plus de messages. Pour revenir, écrivez-nous à tout moment. 👋",
+                           "🚫 لن تصلك رسائل بعد الآن. للعودة، راسلنا في أي وقت. 👋"), None)
 
     # Un chiffre ? sinon on (re)propose le menu — TOUJOURS ramener au menu,
     # c'est la base d'une interface accessible sans lecture.
@@ -132,18 +135,26 @@ def _dispatch(db, tenant, client, state, text: str) -> str | None:
     return _handle_menu(db, tenant, client, state, text)
 
 
-def _handle_menu(db, tenant, client, state, text: str) -> str:
+def _handle_menu(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
+    # Carte de bienvenue au tout premier contact (client jamais vu)
+    card = None
+    if client.last_interaction_at is None:
+        try:
+            card = cards.card_welcome_bytes(_cabinet_name(tenant, client))
+        except Exception:  # noqa: BLE001 — la carte ne doit jamais casser la conversation
+            logger.exception("Génération carte bienvenue échouée")
+
     if text in ("1", "2", "3", "4"):
         if text == "1":
             state.state = "CHOOSING_DATE"
             state.context = {}
-            return _menu_dates(db, tenant, client, state)
+            return (_menu_dates(db, tenant, client, state), None)
         if text == "2":
             upcoming = _upcoming_appointments(db, tenant, client.id, MAX_CANCEL_APPOINTMENTS)
             if not upcoming:
                 state.state = "IDLE"
-                return _t(client, "📭 Vous n'avez aucun rendez-vous à annuler.",
-                                  "📭 لا يوجد لديك أي موعد للإلغاء.")
+                return (_t(client, "📭 Vous n'avez aucun rendez-vous à annuler.",
+                                  "📭 لا يوجد لديك أي موعد للإلغاء."), None)
             state.state = "CANCELLING"
             state.context = {"appointments": [str(a.id) for a in upcoming]}
             lines = [_t(client, "Quel rendez-vous voulez-vous annuler ?",
@@ -151,27 +162,27 @@ def _handle_menu(db, tenant, client, state, text: str) -> str:
             for i, a in enumerate(upcoming, 1):
                 lines.append(f"{i}️⃣ {_fmt_rdv(client, a)}")
             lines.append(_t(client, "0️⃣ ↩️ Revenir au menu", "0️⃣ ↩️ العودة للقائمة"))
-            return "\n".join(lines)
+            return ("\n".join(lines), None)
         if text == "3":
             state.state = "IDLE"
-            return _menu_hours(tenant, client)
+            return (_menu_hours(tenant, client), None)
         if text == "4":
             state.state = "IDLE"
-            return _menu_contact(db, tenant, client)
+            return (_menu_contact(db, tenant, client), None)
     # Entrée invalide / texte libre → on réaffiche le menu principal
     state.state = "IDLE"
-    return _menu_main(client)
+    return (_menu_main(client), card)
 
 
-def _handle_date_choice(db, tenant, client, state, text: str) -> str:
+def _handle_date_choice(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
     dates = _proposed_dates(tenant)
     if text.isdigit() and 1 <= int(text) <= len(dates):
         chosen = dates[int(text) - 1]
         slots = _available_slots(db, tenant, chosen)
         if not slots:
             state.state = "IDLE"
-            return _t(client, "😔 Aucun créneau disponible ce jour-là. Tapez 1 pour réessayer. 📅",
-                              "😔 لا توجد مواعيد متاحة في هذا اليوم. اكتب 1 للمحاولة مجددًا. 📅")
+            return (_t(client, "😔 Aucun créneau disponible ce jour-là. Tapez 1 pour réessayer. 📅",
+                              "😔 لا توجد مواعيد متاحة في هذا اليوم. اكتب 1 للمحاولة مجددًا. 📅"), None)
         state.state = "CHOOSING_SLOT"
         state.context = {
             "date": chosen.isoformat(),
@@ -184,18 +195,18 @@ def _handle_date_choice(db, tenant, client, state, text: str) -> str:
         for i, slot in enumerate(slots, 1):
             lines.append(f"{i}️⃣ {to_tenant_local(slot, tenant).strftime('%H:%M')}")
         lines.append(_t(client, "0️⃣ ↩️ Revenir", "0️⃣ ↩️ العودة"))
-        return "\n".join(lines)
+        return ("\n".join(lines), None)
     if text in ("0",):
         state.state = "IDLE"
-        return _menu_main(client)
+        return (_menu_main(client), None)
     # Invalide → réafficher les dates
-    return _menu_dates(db, tenant, client, state)
+    return (_menu_dates(db, tenant, client, state), None)
 
 
-def _handle_slot_choice(db, tenant, client, state, text: str) -> str:
+def _handle_slot_choice(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
     if text in ("0",):
         state.state = "CHOOSING_DATE"
-        return _menu_dates(db, tenant, client, state)
+        return (_menu_dates(db, tenant, client, state), None)
     slots = state.context.get("slots") or []
     if text.isdigit() and 1 <= int(text) <= len(slots):
         chosen_iso = slots[int(text) - 1]
@@ -214,11 +225,11 @@ def _handle_slot_choice(db, tenant, client, state, text: str) -> str:
             _t(client, "1️⃣ ✅ Oui, confirmer\n2️⃣ 🔄 Changer\n3️⃣ ❌ Annuler",
                       "1️⃣ ✅ نعم، تأكيد\n2️⃣ 🔄 تغيير\n3️⃣ ❌ إلغاء"),
         ]
-        return "\n".join(lines)
+        return ("\n".join(lines), None)
     return _handle_date_choice(db, tenant, client, state, "1")  # repartir sur les dates
 
 
-def _handle_confirm_choice(db, tenant, client, state, text: str) -> str:
+def _handle_confirm_choice(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
     slot_iso = state.context.get("slot")
     if text == "1" and slot_iso:
         start = datetime.fromisoformat(slot_iso)
@@ -249,27 +260,40 @@ def _handle_confirm_choice(db, tenant, client, state, text: str) -> str:
         cabinet = _cabinet_name(tenant, client)
         local_start = to_tenant_local(start, tenant)  # affichage uniquement — start (UTC) déjà stocké au RDV
         day = _WEEKDAYS_FR[local_start.weekday()] if not _is_ar(client) else _WEEKDAYS_AR[local_start.weekday()]
-        return _t(
-            client,
-            f"🎉 RDV confirmé !\n🏥 {cabinet}\n📅 {day} {local_start.strftime('%d/%m/%Y')}\n⏰ {local_start.strftime('%H:%M')}\n\n🔔 Rappels automatiques 24h et 2h avant. À bientôt !",
-            f"🎉 تم تأكيد الموعد!\n🏥 {cabinet}\n📅 {day} {local_start.strftime('%d/%m/%Y')}\n⏰ {local_start.strftime('%H:%M')}\n\n🔔 سنرسل لك تذكيرًا قبل الموعد بـ24 ساعة وساعتين. إلى اللقاء!",
+        day_str = f"{day} {local_start.strftime('%d/%m/%Y')}"
+        time_str = local_start.strftime("%H:%M")
+
+        # Carte visuelle de confirmation (design Kinayad)
+        card = None
+        try:
+            card = cards.card_confirm_bytes(cabinet, day_str, time_str, APPOINTMENT_DURATION_MIN)
+        except Exception:  # noqa: BLE001 — la carte ne doit jamais casser la conversation
+            logger.exception("Génération carte confirmation échouée")
+
+        return (
+            _t(
+                client,
+                f"🎉 RDV confirmé !\n🏥 {cabinet}\n📅 {day_str}\n⏰ {time_str}\n\n🔔 Rappels automatiques 24h et 2h avant. À bientôt !",
+                f"🎉 تم تأكيد الموعد!\n🏥 {cabinet}\n📅 {day_str}\n⏰ {time_str}\n\n🔔 سنرسل لك تذكيرًا قبل الموعد بـ24 ساعة وساعتين. إلى اللقاء!",
+            ),
+            card,
         )
     if text == "2":
         state.state = "CHOOSING_DATE"
         state.context = {}
-        return _menu_dates(db, tenant, client, state)
+        return (_menu_dates(db, tenant, client, state), None)
     if text == "3":
         state.state = "IDLE"
-        return _menu_main(client)
+        return (_menu_main(client), None)
     # Invalide → re-proposer la confirmation
     state.state = "CONFIRMING"
-    return _confirm_prompt(tenant, client, state)
+    return (_confirm_prompt(tenant, client, state), None)
 
 
-def _handle_cancel_choice(db, tenant, client, state, text: str) -> str:
+def _handle_cancel_choice(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
     if text == "0":
         state.state = "IDLE"
-        return _menu_main(client)
+        return (_menu_main(client), None)
     appointments = state.context.get("appointments") or []
     if text.isdigit() and 1 <= int(text) <= len(appointments):
         try:
@@ -288,8 +312,8 @@ def _handle_cancel_choice(db, tenant, client, state, text: str) -> str:
             logger.info("RDV %s annulé par le patient (WhatsApp)", appt.id)
             state.state = "IDLE"
             state.context = {}
-            return _t(client, "❌ Votre rendez-vous a été annulé.\n0️⃣ ↩️ Retour au menu",
-                              "❌ تم إلغاء موعدك.\n0️⃣ ↩️ العودة للقائمة")
+            return (_t(client, "❌ Votre rendez-vous a été annulé.\n0️⃣ ↩️ Retour au menu",
+                              "❌ تم إلغاء موعدك.\n0️⃣ ↩️ العودة للقائمة"), None)
     # Invalide → relister les RDV
     state.state = "CANCELLING"
     state.context = {"appointments": [str(a.id) for a in _upcoming_appointments(db, tenant, client.id, MAX_CANCEL_APPOINTMENTS)]}
@@ -299,7 +323,7 @@ def _handle_cancel_choice(db, tenant, client, state, text: str) -> str:
     for i, a in enumerate(upcoming, 1):
         lines.append(f"{i}️⃣ {_fmt_rdv(client, a)}")
     lines.append(_t(client, "0️⃣ ↩️ Revenir au menu", "0️⃣ ↩️ العودة للقائمة"))
-    return "\n".join(lines)
+    return ("\n".join(lines), None)
 
 
 # ---------------------------------------------------------------------------
@@ -545,10 +569,13 @@ def _opt_out(db, tenant, client) -> None:
     logger.info("Opt-out patient %s (tenant %s)", client.wa_id, tenant.slug)
 
 
-def _send_reply(db, tenant, client, text: str) -> str:
-    """Envoie la réponse (réel ou démo) et la journalise pour audit/tests."""
+def _send_reply(db, tenant, client, text: str, card: bytes | None = None) -> str:
+    """Envoie la réponse (carte visuelle optionnelle + texte) et la journalise."""
     try:
-        message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
+        if card:
+            message_id = whatsapp.send_media_reminder(tenant, client.wa_id, card, caption=text)
+        else:
+            message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
     except Exception:  # noqa: BLE001 — ne jamais casser la conversation
         logger.exception("Échec d'envoi de la réponse à %s", client.wa_id)
         message_id = "failed"
@@ -558,7 +585,7 @@ def _send_reply(db, tenant, client, text: str) -> str:
             tenant_id=tenant.id,
             meta_object="outbound_conversation",
             event_type="outbound",
-            payload={"wa_id": client.wa_id, "text": text, "message_id": message_id},
+            payload={"wa_id": client.wa_id, "text": text, "message_id": message_id, "has_card": bool(card)},
         )
     )
     db.commit()
