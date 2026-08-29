@@ -23,7 +23,20 @@ from sqlalchemy.orm import Session, joinedload
 from app import models
 from app.config import settings
 from app.db.session import SessionLocal, get_db
-from app.services.reminders import create_appointment_and_schedule, normalize_wa_id
+from app.services.reminders import (
+    create_appointment_and_schedule,
+    normalize_wa_id,
+    reschedule_appointment,
+)
+
+DEFAULT_OPENING_HOURS = {
+    "mon": [["09:00", "12:00"], ["14:00", "17:00"]],
+    "tue": [["09:00", "12:00"], ["14:00", "17:00"]],
+    "wed": [["09:00", "12:00"], ["14:00", "17:00"]],
+    "thu": [["09:00", "12:00"], ["14:00", "17:00"]],
+    "fri": [["09:00", "12:00"], ["14:00", "17:00"]],
+}
+_WEEKDAY_LABELS = {"mon": "Lundi", "tue": "Mardi", "wed": "Mercredi", "thu": "Jeudi", "fri": "Vendredi", "sat": "Samedi", "sun": "Dimanche"}
 
 
 def require_dashboard_key(x_dashboard_key: str = Header(default="")) -> None:
@@ -335,3 +348,172 @@ def dashboard_cancel_appointment(slug: str, appointment_id: uuid.UUID, db: Sessi
             r.status = models.ReminderStatus.CANCELLED
     db.commit()
     return {"id": str(appointment.id), "status": "cancelled", "already": False}
+
+
+class DashboardReschedule(BaseModel):
+    start_at: datetime = Field(..., description="Nouvelle date/heure de début (ISO avec fuseau)")
+
+
+@router.patch("/{slug}/appointments/{appointment_id}")
+def dashboard_reschedule_appointment(
+    slug: str, appointment_id: uuid.UUID, payload: DashboardReschedule, db: Session = Depends(get_db)
+):
+    """Déplace un RDV : les anciens rappels sont annulés, les nouveaux 24h/2h
+    sont planifiés sur la nouvelle date. Statut → reporté."""
+    tenant = _get_tenant_or_404(db, slug)
+    appointment = db.get(models.Appointment, appointment_id)
+    if not appointment or appointment.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="RDV introuvable pour ce cabinet")
+    if appointment.status == models.AppointmentStatus.CANCELLED:
+        raise HTTPException(status_code=400, detail="Impossible de déplacer un RDV annulé")
+
+    new_start = _to_utc_naive(payload.start_at)  # convention : stocké en UTC
+    reminders = reschedule_appointment(db, appointment, new_start)
+    return {
+        "id": str(appointment.id),
+        "status": appointment.status.value,
+        "start_at": appointment.start_at.isoformat(),
+        "reminders_rescheduled": len(reminders),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Disponibilités du praticien — heures d'ouverture + blocages ponctuels
+# ---------------------------------------------------------------------------
+
+
+class OpeningHoursUpdate(BaseModel):
+    opening_hours: dict = Field(
+        ...,
+        description='Ex. {"mon": [["09:00","12:00"],["14:00","17:00"]], ...} — clés mon..sun',
+    )
+
+
+class BlockedCreate(BaseModel):
+    start_at: datetime = Field(..., description="Début de l'absence (ISO avec fuseau)")
+    end_at: datetime = Field(..., description="Fin de l'absence (ISO avec fuseau)")
+    reason: str | None = None
+
+
+class AvailabilityOut(BaseModel):
+    opening_hours: dict
+    exceptions: list[dict]
+
+
+def _to_utc_naive(dt: datetime) -> datetime:
+    """Convertit un datetime en UTC sans fuseau (convention de stockage du projet).
+
+    Naive entrant = déjà supposé UTC (comportement SQLite) ; aware entrant =
+    converti en UTC puis dé-fuseau, pour un stockage et une relecture cohérents
+    avec le reste du code (to_tenant_local / _as_utc).
+    """
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _validate_opening_hours(opening_hours: dict) -> dict:
+    """Valide la structure des heures d'ouverture et retourne un dict normalisé."""
+    valid_keys = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+    cleaned: dict = {}
+    for key, ranges in opening_hours.items():
+        if key not in valid_keys:
+            raise HTTPException(status_code=400, detail=f"Jour invalide : {key} (attendu mon..sun)")
+        if ranges is None:
+            cleaned[key] = []
+            continue
+        if not isinstance(ranges, list):
+            raise HTTPException(status_code=400, detail=f"Créneaux invalides pour {key}")
+        valid_ranges = []
+        for pair in ranges:
+            if not isinstance(pair, list) or len(pair) != 2:
+                raise HTTPException(status_code=400, detail=f"Créneau invalide pour {key} : {pair}")
+            try:
+                start = datetime.strptime(pair[0], "%H:%M").time()
+                end = datetime.strptime(pair[1], "%H:%M").time()
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Heure invalide pour {key} : {pair}")
+            if end <= start:
+                raise HTTPException(status_code=400, detail=f"Creneau inversé pour {key} : {pair} (fin après début)")
+            valid_ranges.append([pair[0], pair[1]])
+        cleaned[key] = valid_ranges
+    return cleaned
+
+
+@router.get("/{slug}/availability", response_model=AvailabilityOut)
+def get_availability(slug: str):
+    """Heures d'ouverture actuelles + blocages à venir (et passés récents)."""
+    db = SessionLocal()
+    try:
+        tenant = _get_tenant_or_404(db, slug)
+        hours = (tenant.settings or {}).get("opening_hours") or DEFAULT_OPENING_HOURS
+        exceptions = db.scalars(
+            select(models.AvailabilityException)
+            .where(models.AvailabilityException.tenant_id == tenant.id)
+            .order_by(models.AvailabilityException.start_at.desc())
+            .limit(50)
+        ).all()
+        return AvailabilityOut(
+            opening_hours=hours,
+            exceptions=[
+                {
+                    "id": str(e.id),
+                    "start_at": e.start_at.isoformat() if e.start_at else "",
+                    "end_at": e.end_at.isoformat() if e.end_at else "",
+                    "reason": e.reason,
+                }
+                for e in exceptions
+            ],
+        )
+    finally:
+        db.close()
+
+
+@router.put("/{slug}/availability/opening-hours")
+def update_opening_hours(slug: str, payload: OpeningHoursUpdate, db: Session = Depends(get_db)):
+    """Modifie les jours/heures de consultation du praticien."""
+    tenant = _get_tenant_or_404(db, slug)
+    cleaned = _validate_opening_hours(payload.opening_hours)
+    settings = dict(tenant.settings or {})
+    settings["opening_hours"] = cleaned
+    tenant.settings = settings
+    db.commit()
+    return {"slug": tenant.slug, "opening_hours": cleaned}
+
+
+@router.post("/{slug}/availability/blocked")
+def create_blocked(slug: str, payload: BlockedCreate, db: Session = Depends(get_db)):
+    """Bloque un intervalle (vacances, urgence…) : aucun créneau proposé pendant ce laps de temps."""
+    tenant = _get_tenant_or_404(db, slug)
+    # Convention du projet : tout est stocké en UTC (naive sur SQLite, aware sur Postgres)
+    start = _to_utc_naive(payload.start_at)
+    end = _to_utc_naive(payload.end_at)
+    if end <= start:
+        raise HTTPException(status_code=400, detail="La fin doit être après le début")
+    exception = models.AvailabilityException(
+        tenant_id=tenant.id,
+        start_at=start,
+        end_at=end,
+        reason=payload.reason,
+    )
+    db.add(exception)
+    db.commit()
+    db.refresh(exception)
+    return {
+        "id": str(exception.id),
+        "start_at": exception.start_at.isoformat(),
+        "end_at": exception.end_at.isoformat(),
+        "reason": exception.reason,
+    }
+
+
+@router.delete("/{slug}/availability/blocked/{exception_id}")
+def delete_blocked(slug: str, exception_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Supprime un blocage (le praticien est finalement disponible)."""
+    tenant = _get_tenant_or_404(db, slug)
+    exception = db.get(models.AvailabilityException, exception_id)
+    if not exception or exception.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Blocage introuvable")
+    db.delete(exception)
+    db.commit()
+    return {"id": str(exception_id), "deleted": True}

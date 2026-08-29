@@ -455,6 +455,20 @@ def _available_slots(db: Session, tenant: models.Tenant, day: date) -> list[date
         for a in taken
     ]
 
+    # Blocages ponctuels (vacances, urgence…) → créneaux à exclure aussi
+    exceptions = db.scalars(
+        select(models.AvailabilityException).where(
+            models.AvailabilityException.tenant_id == tenant.id,
+            models.AvailabilityException.start_at < day_end_utc,
+            models.AvailabilityException.end_at > day_start_utc,
+        )
+    ).all()
+    blocked_ranges = [
+        ((_as_utc(e.start_at) or e.start_at).astimezone(tz),
+         (_as_utc(e.end_at) or e.end_at).astimezone(tz))
+        for e in exceptions
+    ]
+
     now_local = datetime.now(tz)
     slots: list[datetime] = []
     for start_str, end_str in ranges:
@@ -467,7 +481,7 @@ def _available_slots(db: Session, tenant: models.Tenant, day: date) -> list[date
         while cursor + timedelta(minutes=APPOINTMENT_DURATION_MIN) <= end:
             slot_end = cursor + timedelta(minutes=APPOINTMENT_DURATION_MIN)
             if cursor >= now_local + timedelta(hours=1):  # marge d'au moins 1h
-                if not any(_overlaps(cursor, slot_end, s, e) for s, e in taken_ranges):
+                if not any(_overlaps(cursor, slot_end, s, e) for s, e in taken_ranges + blocked_ranges):
                     slots.append(cursor.astimezone(timezone.utc))
                     if len(slots) >= MAX_SLOTS_PER_MENU:
                         return slots

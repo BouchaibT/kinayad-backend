@@ -158,6 +158,55 @@ def _schedule(
     return r
 
 
+def reschedule_appointment(
+    db: Session,
+    appointment: models.Appointment,
+    new_start: datetime,
+) -> list[models.ReminderScheduled]:
+    """Déplace un RDV : met à jour la date, réactive les rappels 24h/2h sur la
+    nouvelle date (contrainte UNIQUE(appointment_id, type) : on réutilise la
+    ligne existante, jamais d'insertion en double) et repositionne les
+    marqueurs d'idempotence pour permettre un nouvel envoi.
+
+    Retourne les rappels planifiés (réactivés).
+    """
+    # 1) Mettre à jour le RDV + statut
+    appointment.start_at = new_start
+    appointment.status = models.AppointmentStatus.RESCHEDULED
+    # Les rappels déjà envoyés sur l'ancienne date ne doivent pas bloquer les
+    # nouveaux envois (un rappel 24h envoyé hier n'a plus de sens après déplacement)
+    appointment.confirmation_sent_at = None
+    appointment.reminder_24h_sent_at = None
+    appointment.reminder_2h_sent_at = None
+
+    # 2) Réactiver (ou créer) les rappels 24h / 2h sur la nouvelle date
+    plan = [
+        (models.ReminderType.REMINDER_24H, new_start - timedelta(hours=settings.reminder_24h_hours)),
+        (models.ReminderType.REMINDER_2H, new_start - timedelta(hours=settings.reminder_2h_hours)),
+    ]
+    reminders: list[models.ReminderScheduled] = []
+    for rtype, send_at in plan:
+        existing = next((r for r in appointment.reminders if r.type == rtype), None)
+        if existing:
+            existing.status = models.ReminderStatus.PENDING
+            existing.send_at = send_at
+            existing.wamid = None
+            existing.error_message = f"rescheduled to {new_start.isoformat()}"
+            existing.attempts = 0
+            existing.processed_at = None
+            reminders.append(existing)
+        else:
+            reminders.append(_schedule(db, appointment, rtype, send_at))
+
+    db.commit()
+    db.refresh(appointment)
+    logger.info(
+        "RDV %s déplacé vers %s — %d rappels re-planifiés",
+        appointment.id, new_start.isoformat(), len(reminders),
+    )
+    return reminders
+
+
 # ---------------------------------------------------------------------------
 # 2. Worker — sélection des rappels dus + envoi
 # ---------------------------------------------------------------------------

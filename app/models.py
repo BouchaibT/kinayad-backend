@@ -189,6 +189,9 @@ class Tenant(TimestampMixin, Base):
     conversations: Mapped[list["ConversationState"]] = relationship(
         back_populates="tenant", cascade="all, delete-orphan"
     )
+    availability_exceptions: Mapped[list["AvailabilityException"]] = relationship(
+        back_populates="tenant", cascade="all, delete-orphan"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -576,3 +579,28 @@ class ConversationState(TimestampMixin, Base):
 
     tenant: Mapped["Tenant"] = relationship(back_populates="conversations")
     client: Mapped["Client"] = relationship(back_populates="conversation")
+
+
+# ---------------------------------------------------------------------------
+# availability_exceptions — blocages ponctuels de l'agenda du praticien
+# ---------------------------------------------------------------------------
+
+
+class AvailabilityException(TimestampMixin, Base):
+    """Absence ponctuelle du praticien (vacances, urgence, formation…).
+
+    Intervalle [start_at, end_at) en UTC pendant lequel AUCUN créneau n'est
+    proposé au patient. Géré depuis le dashboard praticien (aucune
+    reconfiguration des heures d'ouverture nécessaire).
+    """
+
+    __tablename__ = "availability_exceptions"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+
+    tenant: Mapped["Tenant"] = relationship(back_populates="availability_exceptions")

@@ -27,4 +27,7 @@ python tests/test_flow_cancel_out.py | tail -1
 echo "==> TEST 3 — conversations en cours (dashboard)"
 python tests/test_dashboard_conversations.py >/dev/null && echo "OK"
 
+echo "==> TEST 4 — agenda praticien (disponibilités, blocages, déplacement)"
+python tests/test_flow_agenda.py | tail -1
+
 echo "==> Batterie terminée"
