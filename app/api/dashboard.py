@@ -70,6 +70,14 @@ class ReminderItem(BaseModel):
     status: str
 
 
+class ConversationItem(BaseModel):
+    client_name: str
+    wa_id_masked: str
+    state: str
+    context_summary: str
+    updated_at: datetime
+
+
 @router.get("/{slug}/summary", response_model=SummaryOut)
 def dashboard_summary(slug: str):
     db = SessionLocal()
@@ -181,6 +189,43 @@ def upcoming_appointments(slug: str, limit: int = Query(10, ge=1, le=50)):
                 practitioner_name=a.practitioner.name if a.practitioner else None,
             )
             for a in rows
+        ]
+    finally:
+        db.close()
+
+
+@router.get("/{slug}/conversations", response_model=list[ConversationItem])
+def active_conversations(slug: str, limit: int = Query(10, ge=1, le=50)):
+    """Conversations WhatsApp en cours (état différent de IDLE)."""
+    db = SessionLocal()
+    try:
+        tenant = _get_tenant_or_404(db, slug)
+        rows = db.scalars(
+            select(models.ConversationState)
+            .options(joinedload(models.ConversationState.client))
+            .where(
+                models.ConversationState.tenant_id == tenant.id,
+                models.ConversationState.state != "IDLE",
+            )
+            .order_by(models.ConversationState.updated_at.desc())
+            .limit(limit)
+        ).unique()
+
+        context_labels = {
+            "CHOOSING_DATE": "choisit un jour",
+            "CHOOSING_SLOT": "choisit un créneau",
+            "CONFIRMING": "confirme son RDV",
+            "CANCELLING": "annule un RDV",
+        }
+        return [
+            ConversationItem(
+                client_name=c.client.name or _mask(None, c.client.wa_id),
+                wa_id_masked=_mask(None, c.client.wa_id),
+                state=c.state,
+                context_summary=context_labels.get(c.state, c.state),
+                updated_at=c.updated_at,
+            )
+            for c in rows
         ]
     finally:
         db.close()

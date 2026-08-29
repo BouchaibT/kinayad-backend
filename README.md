@@ -1,8 +1,8 @@
 # Kinayad — Backend (FastAPI + SQLAlchemy)
 
 Micro-SaaS WhatsApp de RDV + rappels 24h/2h pour praticiens santé/beauté au Maroc.
-Ce dépôt contient le **backend** : modèles SQLAlchemy miroir du schéma SQL
-(`schema.sql`), services rappels/webhook, et routes FastAPI.
+Ce dépôt contient le **backend** : modèles SQLAlchemy, services rappels/webhook,
+conversation WhatsApp par menus chiffrés, et routes FastAPI.
 
 ## Structure
 
@@ -14,47 +14,65 @@ kinayad-backend/
 │   ├── worker.py               # Worker de rappels (polling)
 │   ├── api/
 │   │   ├── bookings.py         # POST /bookings (création RDV + planif rappels)
-│   │   └── webhook.py          # GET/POST /webhook (Meta, signature vérifiée)
+│   │   ├── webhook.py          # GET/POST /webhook (Meta, signature vérifiée)
+│   │   ├── evolution_webhook.py# POST /webhook/evolution (messages WhatsApp réels)
+│   │   ├── dashboard.py        # Lecture seule /public/dashboard/* (mot de passe)
+│   │   ├── internal.py         # POST /internal/run-reminders (cron)
+│   │   └── admin.py            # Création tenant + praticien + liaison Evolution
 │   ├── db/
-│   │   ├── models.py           # 10 tables SQLAlchemy (miroir schema.sql)
+│   │   ├── models.py           # Tables SQLAlchemy (miroir schema.sql)
 │   │   └── session.py          # engine + SessionLocal + get_db()
 │   └── services/
-│       ├── whatsapp.py         # Envoi Cloud API Meta (chiffrement token, démo)
+│       ├── whatsapp.py         # Envoi via Evolution API (WhatsApp Web auto-hébergé)
 │       ├── reminders.py        # Sélection/planification/envoi des rappels
-│       └── meta_webhook.py     # Parsing des événements Meta + opt-out
+│       ├── conversation.py     # ★ Menus à choix numérotés (patients non-lecteurs)
+│       └── meta_webhook.py     # Parsing des événements Meta
+├── tests/
+│   ├── test_flow_evolution.py  # Parcours RDV complet via webhook Evolution
+│   ├── test_flow_cancel_out.py # Annulation + opt-out + webhook Meta
+│   └── test_dashboard_conversations.py
 ├── requirements.txt
 └── README.md
 ```
 
-## Modèles (10 tables)
+## ★ Prise de RDV par choix numérotés (patients qui ne savent pas lire)
 
-Miroir fidèle du schéma SQL :
+Beaucoup de patients au Maroc ne lisent pas mais utilisent WhatsApp tous les
+jours. Kinayad ne leur demande JAMAIS d'écrire une phrase : le bot propose des
+options numérotées, le patient répond par un chiffre.
 
-| Modèle | Table | Rôle |
-|--------|-------|------|
-| `Tenant` | `tenants` | WABA/Phone/Token chiffré, plan, timezone |
-| `Practitioner` | `practitioners` | Multi-praticiens par cabinet |
-| `Client` | `clients` | Identifié par `wa_id` E.164, opt-out |
-| `Appointment` | `appointments` | RDV + marqueurs idempotence |
-| `ReminderScheduled` | `reminders_scheduled` | File du worker |
-| `MessageLog` | `message_logs` | Payload Meta brut (audit) |
-| `MetaTemplate` | `meta_templates` | Statuts templates Meta |
-| `Invoice` / `InvoiceLine` | `invoices` / `invoice_lines` | Facturation MAD |
-| `UsageMeta` | `usage_meta` | Comptage conversations Meta |
-| `AuditLog` | `audit_logs` | Traçabilité/compliance |
+```
+Patient : « Bonjour docteur »          (ou n'importe quoi — le menu revient)
+Bot     : 👋 Choisissez un chiffre :
+          1️⃣ 📅 Prendre RDV   2️⃣ ❌ Annuler   3️⃣ 🕐 Horaires   0️⃣ 🚫 Arrêter
+Patient : 1
+Bot     : 📅 Choisissez un jour : 1️⃣ Lundi 31/08  2️⃣ Mardi 01/09 …
+Patient : 1
+Bot     : 📅 Créneaux : 1️⃣ 09:00  2️⃣ 09:30 …
+Patient : 2
+Bot     : ✅ Confirmez ? 1️⃣ Oui  2️⃣ Changer  3️⃣ Annuler
+Patient : 1
+Bot     : 🎉 RDV confirmé ! + rappels 24h/2h planifiés automatiquement
+```
 
-Points clés respectés depuis `schema.sql` :
+- Machine d'états persistée par patient (`conversation_states`) : IDLE → MENU →
+  CHOOSING_DATE → CHOOSING_SLOT → CONFIRMING → RDV créé (ou CANCELLING).
+- Bilingue FR / AR (détection automatique), emojis-pictogrammes pour les non-lecteurs.
+- Créneaux générés depuis les heures d'ouverture du tenant
+  (`tenant.settings["opening_hours"]`, défaut lun-ven 09h-12h / 14h-17h, pas de 30 min),
+  créneaux déjà pris exclus, marge d'1h.
+- Le même moteur est branché sur **les deux canaux** : webhook Evolution
+  (WhatsApp Web réel) et webhook Meta.
 
-- `tenant_id` FK sur **toutes** les tables métier (isolation).
-- `UNIQUE(tenant_id, wa_id)` sur `clients` → un patient est unique PAR tenant.
-- `UNIQUE(appointment_id, reminder_type)` sur `reminders_scheduled` → **idempotence**.
-- Marqueurs `reminder_24h_sent_at` / `reminder_2h_sent_at` / `confirmation_sent_at`
-  sur `appointments` = source d'idempotence de l'envoi.
-- Statuts ENUM SQLAlchemy (`StatusType` / enum Python) portables PostgreSQL..
+## Canaux WhatsApp
 
-## Fichier de référence
+| Canal | Entrant | Sortant | Coût |
+|-------|---------|---------|------|
+| **Evolution API** (recommandé, auto-hébergé) | `POST /webhook/evolution` | `EVOLUTION_API_URL` + `EVOLUTION_API_KEY` | gratuit (WhatsApp Web) |
+| Meta Cloud API | `POST /webhook` | via `whatsapp.py` | payant par conversation |
 
-- Schéma SQL d'origine : `kinayad-webhook/schema_kinayad.sql`
+En `DEMO_MODE=true`, aucun message n'est réellement envoyé : tout est journalisé
+(dans `message_logs`, `event_type="outbound"`) et retourné — **coût de validation nul**.
 
 ## Lancer (dev)
 
