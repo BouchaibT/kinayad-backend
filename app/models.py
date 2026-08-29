@@ -30,6 +30,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.ext.mutable import MutableDict
 
 # ---------------------------------------------------------------------------
 # Base + mixin commun
@@ -161,7 +162,7 @@ class Tenant(TimestampMixin, Base):
     auto_refacture: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, server_default="true"
     )
-    settings: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False, server_default="{}")
+    settings: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict, nullable=False, server_default="{}")
 
     # relations
     practitioners: Mapped[list["Practitioner"]] = relationship(
@@ -183,6 +184,9 @@ class Tenant(TimestampMixin, Base):
         back_populates="tenant", cascade="all, delete-orphan"
     )
     usages: Mapped[list["UsageMeta"]] = relationship(
+        back_populates="tenant", cascade="all, delete-orphan"
+    )
+    conversations: Mapped[list["ConversationState"]] = relationship(
         back_populates="tenant", cascade="all, delete-orphan"
     )
 
@@ -240,6 +244,9 @@ class Client(TimestampMixin, Base):
     tenant: Mapped["Tenant"] = relationship(back_populates="clients")
     appointments: Mapped[list["Appointment"]] = relationship(back_populates="client")
     reminders: Mapped[list["ReminderScheduled"]] = relationship(back_populates="client")
+    conversation: Mapped["ConversationState | None"] = relationship(
+        back_populates="client", cascade="all, delete-orphan", uselist=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -526,3 +533,46 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# ---------------------------------------------------------------------------
+# conversation_states — machine d'états des conversations WhatsApp (menus chiffrés)
+# ---------------------------------------------------------------------------
+
+
+class ConversationState(TimestampMixin, Base):
+    """État de conversation d'un patient avec le bot (menus à choix numérotés).
+
+    Permet à un patient qui ne sait ni lire ni écrire de prendre RDV en ne
+    répondant que par des CHIFFRES : le bot propose des options numérotées,
+    le patient tape « 1 », « 2 », « 3 »… et le RDV se construit pas à pas.
+
+    États (state) :
+      IDLE            — pas de conversation en cours (menu renvoyé à tout message)
+      MENU            — menu principal affiché (on attend un choix)
+      CHOOSING_DATE   — on attend le chiffre du jour souhaité
+      CHOOSING_SLOT   — on attend le chiffre du créneau souhaité
+      CONFIRMING      — on attend la confirmation (1 = oui / 2 = non / 3 = annuler)
+      CANCELLING      — on attend le chiffre du RDV à annuler
+
+    `context` (JSON) porte les données intermédiaires (date proposée, créneaux…).
+    `expires_at` : au-delà, la conversation repart de zéro (timeout).
+    """
+
+    __tablename__ = "conversation_states"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "client_id", name="uq_conversation_tenant_client"),
+    )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(Text, default="IDLE", nullable=False, server_default="IDLE")
+    context: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict, nullable=False, server_default="{}")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    tenant: Mapped["Tenant"] = relationship(back_populates="conversations")
+    client: Mapped["Client"] = relationship(back_populates="conversation")

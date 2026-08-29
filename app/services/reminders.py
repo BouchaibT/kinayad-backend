@@ -22,6 +22,20 @@ from app.services import whatsapp
 logger = logging.getLogger(__name__)
 
 
+def normalize_wa_id(wa_id: str | None) -> str:
+    """Normalise un identifiant WhatsApp en E.164 sans « + » ni espaces.
+
+    « +212600000003 » et « 212600000003 » (remoteJid Evolution) deviennent
+    tous deux « 212600000003 » — un seul client par patient, quel que soit
+    le canal d'entrée (webhook Meta / webhook Evolution / API bookings).
+    """
+    if not wa_id:
+        return ""
+    cleaned = wa_id.strip().lstrip("+").replace(" ", "").replace("-", "")
+    # Au cas où un remoteJid complet arrive : « 212600000003@s.whatsapp.net »
+    return cleaned.split("@")[0]
+
+
 # ---------------------------------------------------------------------------
 # 1. Création d'un RDV + planification 24h / 2h (en transaction)
 # ---------------------------------------------------------------------------
@@ -74,6 +88,9 @@ def create_appointment_and_schedule(
 def _get_or_create_client(
     db: Session, tenant_id, wa_id, name, phone_e164, preferred_language
 ) -> models.Client:
+    # Normalisation E.164 : on stocke SANS « + » (format des remoteJid Evolution API),
+    # pour qu'un même patient ne soit jamais dupliqué entre webhook et API.
+    wa_id = normalize_wa_id(wa_id)
     existing = db.scalar(
         select(models.Client).where(
             models.Client.tenant_id == tenant_id, models.Client.wa_id == wa_id

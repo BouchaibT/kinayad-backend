@@ -70,6 +70,7 @@ def _handle_messages(db: Session, value: dict, summary: dict) -> None:
 
     for contact in contacts:
         wa_id = contact.get("wa_id")
+        push_name = (contact.get("profile") or {}).get("name")
         for msg in messages:
             msg_id = msg.get("id")
             msg_type = msg.get("type")
@@ -80,16 +81,18 @@ def _handle_messages(db: Session, value: dict, summary: dict) -> None:
                 logger.warning("Webhook pour phone_number_id %s sans tenant associé", phone_number_id)
                 continue
 
-            user_input = body.strip().lower() if body else ""
+            # Le gestionnaire de conversation (menus chiffrés) traite TOUT :
+            # opt-out ("stop"/"0"), prise de RDV, annulation, horaires…
+            try:
+                from app.services import conversation
 
-            # --- Règles de conversation gérées automatiquement (phase 1) ---
-            if user_input in ("stop", "arret", "arrêt", "quit"):
-                _opt_out(db, tenant, wa_id)
-            elif user_input in ("oui", "yes", "confirme", "conf"):
-                _reply_confirmed(db, tenant, wa_id)
-            elif user_input in ("annule", "annuler", "cancel", "non"):
-                _reply_manage(db, tenant, wa_id)
-            # sinon : on ignore (ou on connecte + tard avec un agent/triage)
+                reply = conversation.handle_incoming_message(
+                    db, tenant=tenant, wa_id=wa_id, text=body, push_name=push_name
+                )
+                if reply:
+                    summary["messages"][-1]["replied"] = True
+            except Exception:  # noqa: BLE001 — le webhook ne doit jamais planter
+                logger.exception("Erreur conversation pour %s", wa_id)
 
 
 def _opt_out(db: Session, tenant: models.Tenant, wa_id: str) -> None:
