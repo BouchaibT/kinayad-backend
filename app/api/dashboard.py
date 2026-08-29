@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Routes de lecture pour le tableau de bord public (site vitrine Kinayad).
+Routes du tableau de bord public (site vitrine Kinayad).
 
-Volontairement en lecture seule (aucune écriture possible) et sans clé API :
-la clé API protège les routes sensibles (création de RDV, déclenchement des
-rappels) et ne doit jamais être exposée côté navigateur. Les numéros WhatsApp
-sont partiellement masqués pour limiter l'exposition de données patients tant
-qu'aucune authentification n'a été ajoutée sur cette page (voir README).
+Lecture : KPI, RDV à venir, rappels, conversations en cours.
+Écriture (protégée par le mot de passe dashboard, jamais la clé API interne) :
+création d'un RDV depuis l'interface praticien et annulation.
+
+La clé API interne protège les routes sensibles (déclenchement des rappels,
+admin) et ne doit jamais être exposée côté navigateur. Les numéros WhatsApp
+sont partiellement masqués dans les listes.
 """
 from __future__ import annotations
 
@@ -14,13 +16,14 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app import models
 from app.config import settings
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, get_db
+from app.services.reminders import create_appointment_and_schedule, normalize_wa_id
 
 
 def require_dashboard_key(x_dashboard_key: str = Header(default="")) -> None:
@@ -56,6 +59,7 @@ class SummaryOut(BaseModel):
 
 
 class AppointmentItem(BaseModel):
+    appointment_id: uuid.UUID
     client_name: str
     start_at: datetime
     duration_min: int
@@ -182,6 +186,7 @@ def upcoming_appointments(slug: str, limit: int = Query(10, ge=1, le=50)):
 
         return [
             AppointmentItem(
+                appointment_id=a.id,
                 client_name=_mask(a.client.name, a.client.wa_id),
                 start_at=a.start_at,
                 duration_min=a.duration_min,
@@ -260,3 +265,73 @@ def upcoming_reminders(slug: str, limit: int = Query(10, ge=1, le=50)):
         ]
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Écriture — interface praticien (protégée par le mot de passe dashboard)
+# ---------------------------------------------------------------------------
+
+
+class DashboardBookingCreate(BaseModel):
+    wa_id: str = Field(..., description="Numéro WhatsApp du patient (E.164, avec ou sans +)")
+    client_name: str | None = None
+    start_at: datetime = Field(..., description="Début du RDV (datetime ISO avec fuseau)")
+    duration_min: int = Field(30, ge=5, le=240)
+    practitioner_id: uuid.UUID | None = None
+
+
+@router.post("/{slug}/bookings")
+def dashboard_create_booking(slug: str, payload: DashboardBookingCreate, db: Session = Depends(get_db)):
+    """Crée un RDV depuis le tableau de bord (praticien). Rappels 24h/2h planifiés."""
+    tenant = _get_tenant_or_404(db, slug)
+
+    practitioner_id = payload.practitioner_id
+    if practitioner_id is not None:
+        practitioner = db.get(models.Practitioner, practitioner_id)
+        if not practitioner or practitioner.tenant_id != tenant.id:
+            raise HTTPException(status_code=404, detail="Praticien introuvable pour ce cabinet")
+    else:
+        practitioner = db.scalar(
+            select(models.Practitioner).where(
+                models.Practitioner.tenant_id == tenant.id,
+                models.Practitioner.is_active.is_(True),
+            ).order_by(models.Practitioner.created_at.asc()).limit(1)
+        )
+        practitioner_id = practitioner.id if practitioner else None
+
+    appointment, reminders = create_appointment_and_schedule(
+        db,
+        tenant_id=tenant.id,
+        practitioner_id=practitioner_id,
+        wa_id=normalize_wa_id(payload.wa_id),
+        client_name=payload.client_name,
+        phone_e164=f"+{normalize_wa_id(payload.wa_id)}",
+        preferred_language="fr",
+        start_at=payload.start_at,
+        duration_min=payload.duration_min,
+        notes="Créé depuis le tableau de bord.",
+    )
+    return {
+        "appointment_id": str(appointment.id),
+        "reminders_scheduled": len(reminders),
+        "start_at": appointment.start_at.isoformat(),
+    }
+
+
+@router.delete("/{slug}/appointments/{appointment_id}")
+def dashboard_cancel_appointment(slug: str, appointment_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Annule un RDV depuis le tableau de bord (même mécanisme que l'annulation patient)."""
+    tenant = _get_tenant_or_404(db, slug)
+    appointment = db.get(models.Appointment, appointment_id)
+    if not appointment or appointment.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="RDV introuvable pour ce cabinet")
+    if appointment.status == models.AppointmentStatus.CANCELLED:
+        return {"id": str(appointment.id), "status": "cancelled", "already": True}
+    appointment.status = models.AppointmentStatus.CANCELLED
+    appointment.cancelled_at = datetime.now(timezone.utc)
+    appointment.cancel_reason = "practitioner_dashboard"
+    for r in appointment.reminders:
+        if r.status in (models.ReminderStatus.PENDING, models.ReminderStatus.RETRYING):
+            r.status = models.ReminderStatus.CANCELLED
+    db.commit()
+    return {"id": str(appointment.id), "status": "cancelled", "already": False}
