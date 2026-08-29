@@ -31,7 +31,12 @@ from sqlalchemy.orm import Session
 from app import models
 from app.config import settings
 from app.services import whatsapp
-from app.services.reminders import create_appointment_and_schedule, normalize_wa_id
+from app.services.reminders import (
+    create_appointment_and_schedule,
+    normalize_wa_id,
+    tenant_zoneinfo,
+    to_tenant_local,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +164,7 @@ def _handle_menu(db, tenant, client, state, text: str) -> str:
 
 
 def _handle_date_choice(db, tenant, client, state, text: str) -> str:
-    dates = _proposed_dates()
+    dates = _proposed_dates(tenant)
     if text.isdigit() and 1 <= int(text) <= len(dates):
         chosen = dates[int(text) - 1]
         slots = _available_slots(db, tenant, chosen)
@@ -177,7 +182,7 @@ def _handle_date_choice(db, tenant, client, state, text: str) -> str:
         lines = [_t(client, f"📅 {date_label} — crénaux disponibles :",
                           f"📅 {date_label} — المواعيد المتاحة:")]
         for i, slot in enumerate(slots, 1):
-            lines.append(f"{i}️⃣ {slot.strftime('%H:%M')}")
+            lines.append(f"{i}️⃣ {to_tenant_local(slot, tenant).strftime('%H:%M')}")
         lines.append(_t(client, "0️⃣ ↩️ Revenir", "0️⃣ ↩️ العودة"))
         return "\n".join(lines)
     if text in ("0",):
@@ -196,15 +201,16 @@ def _handle_slot_choice(db, tenant, client, state, text: str) -> str:
         chosen_iso = slots[int(text) - 1]
         state.context["slot"] = chosen_iso
         state.state = "CONFIRMING"
-        start = datetime.fromisoformat(chosen_iso)
-        day = _WEEKDAYS_FR[start.weekday()] if not _is_ar(client) else _WEEKDAYS_AR[start.weekday()]
+        start = datetime.fromisoformat(chosen_iso)  # UTC — stocké tel quel dans le contexte
+        local_start = to_tenant_local(start, tenant)  # heure locale — affichage uniquement
+        day = _WEEKDAYS_FR[local_start.weekday()] if not _is_ar(client) else _WEEKDAYS_AR[local_start.weekday()]
         cabinet = _cabinet_name(tenant, client)
         lines = [
             _t(client, "✅ Confirmez votre rendez-vous :",
                       "✅ تأكيد الموعد:"),
             f"🏥 {cabinet}",
-            f"📅 {day} {start.strftime('%d/%m/%Y')}",
-            f"⏰ {start.strftime('%H:%M')}",
+            f"📅 {day} {local_start.strftime('%d/%m/%Y')}",
+            f"⏰ {local_start.strftime('%H:%M')}",
             _t(client, "1️⃣ ✅ Oui, confirmer\n2️⃣ 🔄 Changer\n3️⃣ ❌ Annuler",
                       "1️⃣ ✅ نعم، تأكيد\n2️⃣ 🔄 تغيير\n3️⃣ ❌ إلغاء"),
         ]
@@ -241,11 +247,12 @@ def _handle_confirm_choice(db, tenant, client, state, text: str) -> str:
         state.state = "IDLE"
         state.context = {}
         cabinet = _cabinet_name(tenant, client)
-        day = _WEEKDAYS_FR[start.weekday()] if not _is_ar(client) else _WEEKDAYS_AR[start.weekday()]
+        local_start = to_tenant_local(start, tenant)  # affichage uniquement — start (UTC) déjà stocké au RDV
+        day = _WEEKDAYS_FR[local_start.weekday()] if not _is_ar(client) else _WEEKDAYS_AR[local_start.weekday()]
         return _t(
             client,
-            f"🎉 RDV confirmé !\n🏥 {cabinet}\n📅 {day} {start.strftime('%d/%m/%Y')}\n⏰ {start.strftime('%H:%M')}\n\n🔔 Rappels automatiques 24h et 2h avant. À bientôt !",
-            f"🎉 تم تأكيد الموعد!\n🏥 {cabinet}\n📅 {day} {start.strftime('%d/%m/%Y')}\n⏰ {start.strftime('%H:%M')}\n\n🔔 سنرسل لك تذكيرًا قبل الموعد بـ24 ساعة وساعتين. إلى اللقاء!",
+            f"🎉 RDV confirmé !\n🏥 {cabinet}\n📅 {day} {local_start.strftime('%d/%m/%Y')}\n⏰ {local_start.strftime('%H:%M')}\n\n🔔 Rappels automatiques 24h et 2h avant. À bientôt !",
+            f"🎉 تم تأكيد الموعد!\n🏥 {cabinet}\n📅 {day} {local_start.strftime('%d/%m/%Y')}\n⏰ {local_start.strftime('%H:%M')}\n\n🔔 سنرسل لك تذكيرًا قبل الموعد بـ24 ساعة وساعتين. إلى اللقاء!",
         )
     if text == "2":
         state.state = "CHOOSING_DATE"
@@ -321,7 +328,7 @@ def _menu_main(client) -> str:
 
 
 def _menu_dates(db, tenant, client, state) -> str:
-    dates = _proposed_dates()
+    dates = _proposed_dates(tenant)
     state.state = "CHOOSING_DATE"
     state.context = {}
     lines = [_t(client, "📅 Choisissez un jour :", "📅 اختر يومًا:")]
@@ -373,9 +380,14 @@ def _menu_contact(db, tenant, client) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _proposed_dates(max_days: int = 4) -> list[date]:
-    """Les prochains jours OUVRÉS à partir d'aujourd'hui (inclus)."""
-    today = datetime.now(timezone.utc).astimezone().date()
+def _proposed_dates(tenant: models.Tenant, max_days: int = 4) -> list[date]:
+    """Les prochains jours OUVRÉS à partir d'aujourd'hui (inclus), en heure locale du cabinet.
+
+    « Aujourd'hui » doit être le jour du cabinet (Africa/Casablanca par défaut), pas
+    celui du serveur — sinon un patient qui écrit tard le soir peut se voir proposer
+    le mauvais jour selon où tourne le serveur (Render tourne en UTC).
+    """
+    today = datetime.now(tenant_zoneinfo(tenant)).date()
     dates: list[date] = []
     d = today
     while len(dates) < max_days and d <= today + timedelta(days=14):
@@ -393,25 +405,33 @@ def _available_slots(db: Session, tenant: models.Tenant, day: date) -> list[date
     if not ranges:
         return []
 
-    tz = timezone.utc
-    day_start = datetime.combine(day, time.min, tzinfo=tz)
-    day_end = day_start + timedelta(days=1)
+    # Les horaires d'ouverture ("09:00"-"12:00") sont exprimés en heure LOCALE du
+    # cabinet (Africa/Casablanca par défaut) — jamais en UTC. Tout le calcul se fait
+    # donc dans ce fuseau, et seul le résultat final (les créneaux retenus) est
+    # reconverti en UTC, seul format que la base et le reste du code comprennent
+    # (Appointment.start_at est un DateTime(timezone=True) stocké en UTC).
+    tz = tenant_zoneinfo(tenant)
+    day_start_local = datetime.combine(day, time.min, tzinfo=tz)
+    day_end_local = day_start_local + timedelta(days=1)
+    day_start_utc = day_start_local.astimezone(timezone.utc)
+    day_end_utc = day_end_local.astimezone(timezone.utc)
 
     # RDV déjà pris ce jour-là (non annulés) → créneaux à exclure
     taken = db.scalars(
         select(models.Appointment).where(
             models.Appointment.tenant_id == tenant.id,
-            models.Appointment.start_at >= day_start,
-            models.Appointment.start_at < day_end,
+            models.Appointment.start_at >= day_start_utc,
+            models.Appointment.start_at < day_end_utc,
             models.Appointment.status != models.AppointmentStatus.CANCELLED,
         )
     ).all()
+    # Comparés en heure locale, dans le même fuseau que le curseur ci-dessous.
     taken_ranges = [
-        (_as_utc(a.start_at), _as_utc(a.start_at) + timedelta(minutes=a.duration_min))
+        (_as_utc(a.start_at).astimezone(tz), _as_utc(a.start_at).astimezone(tz) + timedelta(minutes=a.duration_min))
         for a in taken
     ]
 
-    now = datetime.now(timezone.utc)
+    now_local = datetime.now(tz)
     slots: list[datetime] = []
     for start_str, end_str in ranges:
         try:
@@ -422,9 +442,9 @@ def _available_slots(db: Session, tenant: models.Tenant, day: date) -> list[date
         cursor = start
         while cursor + timedelta(minutes=APPOINTMENT_DURATION_MIN) <= end:
             slot_end = cursor + timedelta(minutes=APPOINTMENT_DURATION_MIN)
-            if cursor >= now + timedelta(hours=1):  # marge d'au moins 1h
+            if cursor >= now_local + timedelta(hours=1):  # marge d'au moins 1h
                 if not any(_overlaps(cursor, slot_end, s, e) for s, e in taken_ranges):
-                    slots.append(cursor)
+                    slots.append(cursor.astimezone(timezone.utc))
                     if len(slots) >= MAX_SLOTS_PER_MENU:
                         return slots
             cursor += timedelta(minutes=APPOINTMENT_DURATION_MIN)
@@ -546,7 +566,7 @@ def _send_reply(db, tenant, client, text: str) -> str:
 
 
 def _confirm_prompt(tenant, client, state) -> str:
-    start = datetime.fromisoformat(state.context.get("slot", ""))
+    start = to_tenant_local(datetime.fromisoformat(state.context.get("slot", "")), tenant)
     cabinet = _cabinet_name(tenant, client)
     lines = [
         _t(client, "✅ Confirmez votre rendez-vous :", "✅ تأكيد الموعد:"),
@@ -560,7 +580,7 @@ def _confirm_prompt(tenant, client, state) -> str:
 
 
 def _fmt_rdv(client, appointment) -> str:
-    start = appointment.start_at
+    start = to_tenant_local(appointment.start_at, appointment.tenant)
     day = _WEEKDAYS_FR[start.weekday()] if not _is_ar(client) else _WEEKDAYS_AR[start.weekday()]
     return f"{day} {start.strftime('%d/%m')} à {start.strftime('%H:%M')}"
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,6 +21,27 @@ from app.config import settings
 from app.services import whatsapp
 
 logger = logging.getLogger(__name__)
+
+
+def tenant_zoneinfo(tenant: "models.Tenant | None") -> ZoneInfo:
+    """Fuseau horaire du cabinet (Africa/Casablanca par défaut) — jamais celui du serveur.
+
+    Toutes les heures RDV sont stockées en UTC (DateTime(timezone=True)) ; ce fuseau
+    sert uniquement à l'affichage et à l'interprétation des horaires d'ouverture, qui
+    sont exprimés en heure locale du cabinet, pas en UTC.
+    """
+    tz_name = (tenant.timezone if tenant else None) or "Africa/Casablanca"
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:  # noqa: BLE001 — nom de fuseau invalide en base, ne jamais planter
+        return ZoneInfo("Africa/Casablanca")
+
+
+def to_tenant_local(dt: datetime, tenant: "models.Tenant | None") -> datetime:
+    """Convertit un datetime (UTC ou naïf, considéré UTC) vers l'heure locale du cabinet."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(tenant_zoneinfo(tenant))
 
 
 def normalize_wa_id(wa_id: str | None) -> str:
@@ -238,8 +260,9 @@ def _mark_skipped(db: Session, r: models.ReminderScheduled, reason: str) -> None
 def _build_reminder_text(appointment: models.Appointment, rtype: models.ReminderType) -> str:
     p = appointment.practitioner
     cabinet = p.cabinet_name or p.name if p else "votre praticien"
-    heure = appointment.start_at.strftime("%H:%M")
-    date = appointment.start_at.strftime("%d/%m/%Y")
+    local_start = to_tenant_local(appointment.start_at, appointment.tenant)
+    heure = local_start.strftime("%H:%M")
+    date = local_start.strftime("%d/%m/%Y")
     language = appointment.client.preferred_language if appointment.client else "fr"
 
     if language in ("ar", "ar_MA"):

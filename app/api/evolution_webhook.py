@@ -59,15 +59,18 @@ async def receive_evolution(request: Request):
         except Exception:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body")
 
-        # --- Sécurité minimale : l'apikey de l'instance, si fournie ---
+        # --- Sécurité : l'apikey de l'instance est OBLIGATOIRE dès qu'elle est configurée.
+        # Un appel sans apikey n'est PAS une exemption : sans ce contrôle, n'importe qui
+        # devinant/connaissant le nom d'instance pouvait déclencher de fausses actions
+        # (RDV, annulation, opt-out) sans jamais passer par un vrai message WhatsApp.
         if settings.evolution_api_key:
             provided = (
                 request.headers.get("apikey")
                 or request.headers.get("x-evolution-apikey")
                 or (payload.get("apikey") if isinstance(payload, dict) else None)
             )
-            if provided and provided != settings.evolution_api_key:
-                logger.warning("Webhook Evolution : apikey invalide rejetée")
+            if not provided or provided != settings.evolution_api_key:
+                logger.warning("Webhook Evolution : apikey manquante ou invalide, requête rejetée")
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid apikey")
 
         event = payload.get("event") if isinstance(payload, dict) else None
