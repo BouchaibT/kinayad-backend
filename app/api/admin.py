@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -146,3 +147,53 @@ def set_tenant_timezone(slug: str, payload: TimezoneUpdate, db: Session = Depend
     tenant.timezone = payload.timezone
     db.commit()
     return {"slug": tenant.slug, "timezone": tenant.timezone}
+
+
+class AppointmentAdminItem(BaseModel):
+    id: uuid.UUID
+    client_name: str | None
+    wa_id: str
+    start_at: str
+    status: str
+
+
+@router.get("/tenants/{slug}/appointments", response_model=list[AppointmentAdminItem])
+def list_appointments(slug: str, db: Session = Depends(get_db)):
+    """Lecture seule — diagnostic/nettoyage (aucune route n'exposait les RDV avec leur id)."""
+    tenant = db.scalar(select(models.Tenant).where(models.Tenant.slug == slug))
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Cabinet introuvable")
+    rows = db.scalars(
+        select(models.Appointment)
+        .where(models.Appointment.tenant_id == tenant.id)
+        .order_by(models.Appointment.start_at.asc())
+    ).unique()
+    return [
+        AppointmentAdminItem(
+            id=a.id,
+            client_name=a.client.name if a.client else None,
+            wa_id=a.client.wa_id if a.client else "",
+            start_at=a.start_at.isoformat(),
+            status=a.status.value,
+        )
+        for a in rows
+    ]
+
+
+@router.delete("/appointments/{appointment_id}")
+def cancel_appointment(appointment_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Annule un RDV (même mécanisme que l'annulation patient : statut + rappels
+    en attente annulés, rien n'est supprimé de la base pour garder la traçabilité)."""
+    appointment = db.get(models.Appointment, appointment_id)
+    if not appointment:
+        raise HTTPException(status_code=404, detail="RDV introuvable")
+    if appointment.status == models.AppointmentStatus.CANCELLED:
+        return {"id": str(appointment.id), "status": "cancelled", "already": True}
+    appointment.status = models.AppointmentStatus.CANCELLED
+    appointment.cancelled_at = datetime.now(timezone.utc)
+    appointment.cancel_reason = "admin_cleanup"
+    for r in appointment.reminders:
+        if r.status in (models.ReminderStatus.PENDING, models.ReminderStatus.RETRYING):
+            r.status = models.ReminderStatus.CANCELLED
+    db.commit()
+    return {"id": str(appointment.id), "status": "cancelled", "already": False}
