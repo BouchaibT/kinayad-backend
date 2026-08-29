@@ -10,8 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Dépendances système minimales (psycopg[binary] embarque son runtime)
+# fonts-dejavu-core : requis par app/services/cards.py (génération des cartes
+# visuelles WhatsApp), absent de l'image de base python:3.11-slim.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Dépendances Python (cache Docker efficace)
