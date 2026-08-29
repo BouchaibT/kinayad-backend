@@ -276,8 +276,13 @@ def _send_one(db: Session, r: models.ReminderScheduled) -> None:
         logger.exception("Génération carte rappel échouée (on envoie le texte seul)")
 
     # whatsapp.send_* gère lui-même le mode démo (aucun envoi réel).
+    # Résilience : si l'image échoue, le texte du rappel part quand même.
     if card:
-        message_id = whatsapp.send_media_reminder(tenant, client.wa_id, card, caption=text)
+        try:
+            message_id = whatsapp.send_media_reminder(tenant, client.wa_id, card, caption=text)
+        except Exception:  # noqa: BLE001 — un rappel texte vaut mieux que rien
+            logger.exception("Échec envoi carte rappel — repli sur le texte seul")
+            message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
     else:
         message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
     _mark_sent(db, r, appointment, message_id)

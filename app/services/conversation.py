@@ -584,10 +584,18 @@ def _opt_out(db, tenant, client) -> None:
 
 
 def _send_reply(db, tenant, client, text: str, card: bytes | None = None) -> str:
-    """Envoie la réponse (carte visuelle optionnelle + texte) et la journalise."""
+    """Envoie la réponse (carte visuelle optionnelle + texte) et la journalise.
+
+    Résilience : si l'envoi de l'image échoue (réseau, proxy, API…), on replie
+    sur le texte seul — un patient ne doit JAMAIS rester sans réponse.
+    """
     try:
         if card:
-            message_id = whatsapp.send_media_reminder(tenant, client.wa_id, card, caption=text)
+            try:
+                message_id = whatsapp.send_media_reminder(tenant, client.wa_id, card, caption=text)
+            except Exception:  # noqa: BLE001 — repli : le texte seul vaut mieux que rien
+                logger.exception("Échec envoi image à %s — repli sur le texte seul", client.wa_id)
+                message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
         else:
             message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
     except Exception:  # noqa: BLE001 — ne jamais casser la conversation
