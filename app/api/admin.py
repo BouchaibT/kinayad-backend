@@ -101,3 +101,48 @@ def link_evolution_instance(slug: str, payload: EvolutionLink, db: Session = Dep
     tenant.settings = updated
     db.commit()
     return {"slug": tenant.slug, "evolution_instance": payload.instance, "evolution_instance_number": payload.number}
+
+
+class TenantDetail(BaseModel):
+    slug: str
+    name: str
+    timezone: str
+    plan: str
+    status: str
+    settings: dict
+
+
+@router.get("/tenants/{slug}", response_model=TenantDetail)
+def get_tenant(slug: str, db: Session = Depends(get_db)):
+    """Lecture seule — diagnostic (aucune route ne permettait de relire un tenant existant)."""
+    tenant = db.scalar(select(models.Tenant).where(models.Tenant.slug == slug))
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Cabinet introuvable")
+    return TenantDetail(
+        slug=tenant.slug,
+        name=tenant.name,
+        timezone=tenant.timezone,
+        plan=tenant.plan.value,
+        status=tenant.status.value,
+        settings=tenant.settings or {},
+    )
+
+
+class TimezoneUpdate(BaseModel):
+    timezone: str = Field(..., description="Fuseau IANA (ex. Africa/Casablanca)")
+
+
+@router.patch("/tenants/{slug}/timezone")
+def set_tenant_timezone(slug: str, payload: TimezoneUpdate, db: Session = Depends(get_db)):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    tenant = db.scalar(select(models.Tenant).where(models.Tenant.slug == slug))
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Cabinet introuvable")
+    try:
+        ZoneInfo(payload.timezone)
+    except ZoneInfoNotFoundError:
+        raise HTTPException(status_code=400, detail=f"Fuseau IANA invalide : {payload.timezone}")
+    tenant.timezone = payload.timezone
+    db.commit()
+    return {"slug": tenant.slug, "timezone": tenant.timezone}
