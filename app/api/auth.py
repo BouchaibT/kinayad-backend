@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import re
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -165,14 +165,17 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=AuthOut)
-def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)):
+def login(payload: LoginIn, db: Session = Depends(get_db)):
     """Connexion email + mot de passe → token opaque (30 jours)."""
-    # Rate limiting par IP — le dashboard devient public sur Internet
-    client_ip = request.client.host if request.client else "unknown"
-    if not auth_service.login_limiter.allow(client_ip):
+    # Rate limiting par EMAIL, pas par IP : derrière le proxy Render (pas de
+    # X-Forwarded-For géré), request.client.host est constant pour tous les
+    # visiteurs — une limite par IP y ferait bloquer tous les cabinets dès
+    # qu'UN seul compte reçoit trop de tentatives. Par email, seul le compte
+    # ciblé est freiné, jamais les autres.
+    email = payload.email.lower().strip()
+    if not auth_service.login_limiter.allow(email):
         raise HTTPException(status_code=429, detail="Trop de tentatives — réessayez dans une minute")
 
-    email = payload.email.lower().strip()
     user = db.scalar(select(models.User).where(models.User.email == email))
     if not user or not auth_service.verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
