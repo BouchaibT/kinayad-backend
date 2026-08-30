@@ -396,6 +396,7 @@ class BlockedCreate(BaseModel):
 class AvailabilityOut(BaseModel):
     opening_hours: dict
     exceptions: list[dict]
+    address: str | None = None
 
 
 def _to_utc_naive(dt: datetime) -> datetime:
@@ -462,6 +463,7 @@ def get_availability(slug: str):
                 }
                 for e in exceptions
             ],
+            address=(tenant.settings or {}).get("address"),
         )
     finally:
         db.close()
@@ -477,6 +479,24 @@ def update_opening_hours(slug: str, payload: OpeningHoursUpdate, db: Session = D
     tenant.settings = settings
     db.commit()
     return {"slug": tenant.slug, "opening_hours": cleaned}
+
+
+class AddressUpdate(BaseModel):
+    address: str | None = Field(None, description="Adresse du cabinet (ex. 12 Avenue Hassan II, Casablanca)")
+
+
+@router.put("/{slug}/address")
+def update_address(slug: str, payload: AddressUpdate, db: Session = Depends(get_db)):
+    """Enregistre l'adresse du cabinet — affichée dans les menus Horaires et Contact."""
+    tenant = _get_tenant_or_404(db, slug)
+    settings = dict(tenant.settings or {})
+    if payload.address and payload.address.strip():
+        settings["address"] = payload.address.strip()[:200]
+    else:
+        settings.pop("address", None)
+    tenant.settings = settings
+    db.commit()
+    return {"slug": tenant.slug, "address": settings.get("address")}
 
 
 @router.post("/{slug}/availability/blocked")
