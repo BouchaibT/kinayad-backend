@@ -248,6 +248,9 @@ class Client(TimestampMixin, Base):
     )
     opted_out_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     opted_out_reason: Mapped[str | None] = mapped_column(Text)
+    # Consentement explicite aux rappels WhatsApp (loi 09-08 / RGPD) — requis
+    # pour planifier les rappels ; NULL = consentement jamais donné.
+    consent_reminders_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     tenant: Mapped["Tenant"] = relationship(back_populates="clients")
@@ -298,6 +301,11 @@ class Appointment(TimestampMixin, Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancel_reason: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    # RDV créé par le praticien pour un patient sans consentement : en attente
+    # d'une confirmation WhatsApp du patient avant de planifier les rappels.
+    reminders_consent_pending: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     tenant: Mapped["Tenant"] = relationship(back_populates="appointments")
     practitioner: Mapped["Practitioner"] = relationship(back_populates="appointments")

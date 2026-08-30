@@ -12,6 +12,7 @@ sont partiellement masqués dans les listes.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -38,6 +39,8 @@ DEFAULT_OPENING_HOURS = {
     "fri": [["09:00", "12:00"], ["14:00", "17:00"]],
 }
 _WEEKDAY_LABELS = {"mon": "Lundi", "tue": "Mardi", "wed": "Mercredi", "thu": "Jeudi", "fri": "Vendredi", "sat": "Samedi", "sun": "Dimanche"}
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -310,6 +313,23 @@ def dashboard_create_booking(slug: str, payload: DashboardBookingCreate, db: Ses
         )
         practitioner_id = practitioner.id if practitioner else None
 
+    # Patient sans consentement : le RDV est créé SANS rappels, et on demande
+    # au patient de confirmer sur WhatsApp avant de planifier les rappels
+    # (opt-in explicite, loi 09-08 / RGPD). Le praticien n'enregistre PAS le
+    # consentement à sa place.
+    wa = normalize_wa_id(payload.wa_id)
+    client = db.scalar(
+        select(models.Client).where(models.Client.tenant_id == tenant.id, models.Client.wa_id == wa)
+    )
+    if client is None:
+        client = models.Client(
+            tenant_id=tenant.id, wa_id=wa, name=payload.client_name,
+            phone_e164=f"+{wa}", preferred_language="fr",
+        )
+        db.add(client)
+        db.flush()
+    db.commit()
+
     appointment, reminders = create_appointment_and_schedule(
         db,
         tenant_id=tenant.id,
@@ -322,6 +342,33 @@ def dashboard_create_booking(slug: str, payload: DashboardBookingCreate, db: Ses
         duration_min=payload.duration_min,
         notes="Créé depuis le tableau de bord.",
     )
+
+    # Opt-in explicite : si le patient n'a jamais consenti, on le marque en
+    # attente et on lui demande de confirmer sur WhatsApp avant de planifier
+    # les rappels (loi 09-08 / RGPD).
+    if client.consent_reminders_at is None:
+        appointment.reminders_consent_pending = True
+        db.commit()
+        try:
+            from app.services.reminders import to_tenant_local
+            from app.services import whatsapp
+
+            local_start = to_tenant_local(appointment.start_at, tenant)
+            from app.services.conversation import _WEEKDAYS_FR
+
+            day = _WEEKDAYS_FR[local_start.weekday()]
+            whatsapp.send_text_reminder(
+                tenant,
+                client.wa_id,
+                f"Bonjour ! Votre rendez-vous est confirmé : {day} {local_start.strftime('%d/%m/%Y')} à "
+                f"{local_start.strftime('%H:%M')} chez {tenant.name}.\n\n"
+                "Souhaitez-vous recevoir des rappels WhatsApp avant votre RDV ?\n"
+                "1️⃣ Oui, je suis d'accord\n"
+                "2️⃣ Non, sans rappels",
+            )
+        except Exception:  # noqa: BLE001 — l'envoi ne doit pas casser la création du RDV
+            logger.exception("Envoi demande de consentement échoué (RDV %s)", appointment.id)
+
     return {
         "appointment_id": str(appointment.id),
         "reminders_scheduled": len(reminders),

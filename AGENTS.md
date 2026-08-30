@@ -88,8 +88,42 @@ Bouchaib (décideur, propriétaire), Hermès (code + tests locaux), Claude Code
   (401 confirmé). Isolation vérifiée en vraie prod (deux tenants distincts).
 - Compte admin du cabinet existant (Dr. Hachmi Bouchaib) : **FAIT** — créé et
   testé (connexion confirmée).
-- Adresse du cabinet : branche backend `feat/adresse-cabinet` (endpoint `PUT
-  /{slug}/address`) — revue séparée à faire, pas encore de PR ouverte.
+- Adresse du cabinet : **FAIT** — mergée et déployée (endpoint `PUT
+  /{slug}/address`), affichée dans les menus Horaires et Contact.
+- Bug critique « 0 = retour » confondu avec l'opt-out (Horaires, Contact,
+  dates, créneaux) : **FAIT** — corrigé et déployé en urgence le 30/08.
+- Conformité (opt-in explicite rappels + droit d'effacement, loi 09-08/RGPD) :
+  en revue par Claude Code (branche `feat/conformite`). **Reste à faire même
+  après cette PR** : déclaration CNDP auprès de l'autorité marocaine (pas
+  encore faite, obligation réelle sous la loi 09-08 — voir la checklist
+  ajoutée à `tri-factures/RETENTION_RGPD.md` pour le même type de démarche).
 - Tenant de test resté en base (`cabinet-verif-prod`, créé pendant la
   vérification post-déploiement) : inoffensif, pas de route de suppression de
   tenant pour l'instant.
+
+## État de l'art (recherche août 2026) — RDV WhatsApp médicaux
+
+Marché : Meta Cloud API = référence (templates interactifs, fenêtre 24h) ;
+produits leaders Bot MD, Voiceoc, KaryaBuddyAI (résumé quotidien au médecin) ;
+marocains : TabibDoc Pro, DrivoHealth (RBAC), Docdialy (darija), WivoAgency.
+
+Bonnes pratiques : opt-in explicite + STOP dans chaque rappel ; 1-2 rappels
+max (24h + 1-2h) ; boutons Quick Reply ; analytics (no-show, heures gagnées) ;
+résumé quotidien WhatsApp au praticien ; réduction no-show "40-80%" — chiffre
+vu sur plusieurs sites de conseil SEO, **source primaire jamais confirmée**,
+ne pas le réutiliser comme argument commercial sans le vérifier autrement.
+
+Kinayad a : parcours par chiffres (unique pour non-lecteurs), cartes design,
+multi-cabinet isolé, agenda complet, opt-out conforme, **opt-in explicite
+enregistré + droit d'effacement (loi 09-08/RGPD, fait le 30/08)**.
+Analytics : confirmation_rate_pct/no_show_rate_pct **déjà calculés côté
+backend** (`/summary`) — ce qui manque, c'est l'affichage dans le dashboard,
+pas le calcul.
+À faire (par ordre de valeur) : 1) résumé quotidien WhatsApp au praticien,
+2) affichage des analytics déjà calculés dans le dashboard, 3) darija,
+4) lien de RDV en ligne (à ne proposer qu'en complément secondaire — il va
+à l'encontre du différenciateur "pas de formulaire, juste WhatsApp"),
+5) intégration Google Agenda, 6) boutons (API Meta, offre Premium).
+Angle manquant identifié en revue : déclaration CNDP à prévoir avant tout
+client marocain réel (voir section conformité ci-dessus pour Kinayad
+lui-même ; même logique que la checklist ajoutée à tri-factures).
