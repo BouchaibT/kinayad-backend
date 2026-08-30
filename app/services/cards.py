@@ -69,14 +69,20 @@ def _png_bytes(img: Image.Image) -> bytes:
 
 def card_welcome_bytes(cabinet_name: str = "Votre cabinet") -> bytes:
     img, d = _base_card()
-    d.text((40, 170), "Bienvenue !", font=_font(34, True), fill=GREEN_DEEP)
+    # Accueil professionnel de cabinet médical (pas de « Bienvenue ! » générique)
+    d.text((40, 165), "Bonjour,", font=_font(34, True), fill=GREEN_DEEP)
+    lower = cabinet_name.lower()
+    prefix = "vous êtes bien au" if any(
+        lower.startswith(w) for w in ("cabinet", "clinique", "centre", "polyclinique", "cabinets")
+    ) else "vous êtes bien au cabinet"
+    d.text((40, 214), prefix, font=_font(22), fill=INK_SOFT)
     f_name = _fit_font(d, cabinet_name, 30, W - 80, bold=True)
-    d.text((40, 222), cabinet_name, font=f_name, fill=GREEN)
-    d.text((40, 282), "Réservez votre rendez-vous", font=_font(22), fill=INK_SOFT)
-    d.text((40, 316), "en répondant par un chiffre :", font=_font(22), fill=INK_SOFT)
-    d.text((40, 372), "1  Prendre RDV        2  Annuler", font=_font(22), fill=INK)
-    d.text((40, 410), "3  Horaires              0  Arrêter", font=_font(22), fill=INK)
-    d.text((40, H - 58), "100% WhatsApp — simple, même sans lire", font=_font(17), fill=INK_SOFT)
+    d.text((40, 250), cabinet_name, font=f_name, fill=GREEN)
+    d.text((40, 305), "Réservez votre rendez-vous", font=_font(22), fill=INK_SOFT)
+    d.text((40, 338), "en répondant par un chiffre :", font=_font(22), fill=INK_SOFT)
+    d.text((40, 385), "1  Prendre RDV        2  Annuler", font=_font(22), fill=INK)
+    d.text((40, 418), "3  Horaires              0  Arrêter", font=_font(22), fill=INK)
+    d.text((40, H - 38), "100% WhatsApp — simple et accessible à tous", font=_font(17), fill=INK_SOFT)
     return _png_bytes(img)
 
 

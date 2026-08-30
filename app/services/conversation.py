@@ -96,11 +96,17 @@ def handle_incoming_message(
     text = text.strip()
     reply_text, card = _dispatch(db, tenant, client, state, text)
 
-    if reply_text:
-        _send_reply(db, tenant, client, reply_text, card=card)
+    # Repli si l'image est seule : le menu texte est conservé pour le cas où
+    # l'envoi d'image échouerait (le patient ne doit jamais rester sans réponse)
+    fallback = state.context.pop("fallback_menu", None) if reply_text is None else None
+
+    if reply_text or card:
+        _send_reply(db, tenant, client, reply_text or "", card=card, fallback_text=fallback)
         client.last_interaction_at = datetime.now(timezone.utc)
         db.commit()
-    return reply_text
+    # Retour du contenu effectivement envoyé (carte seule → son texte de repli,
+    # pour que les appelants/webhooks considèrent la réponse comme émise)
+    return reply_text or fallback or ""
 
 
 # ---------------------------------------------------------------------------
@@ -135,15 +141,23 @@ def _dispatch(db, tenant, client, state, text: str) -> tuple[str | None, bytes |
     return _handle_menu(db, tenant, client, state, text)
 
 
-def _handle_menu(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
-    # Carte de bienvenue à CHAQUE affichage du menu principal : le patient voit
-    # le design à chaque « Bonjour » / retour au menu, pas seulement au 1er contact.
-    card = None
+def _welcome_card(tenant, client) -> bytes | None:
+    """Carte de bienvenue (ou None si la génération échoue — jamais bloquant)."""
     try:
-        card = cards.card_welcome_bytes(_cabinet_name(tenant, client))
-    except Exception:  # noqa: BLE001 — la carte ne doit jamais casser la conversation
+        return cards.card_welcome_bytes(_cabinet_name(tenant, client))
+    except Exception:  # noqa: BLE001
         logger.exception("Génération carte bienvenue échouée")
+        return None
 
+
+def _menu_principal(tenant, client, state) -> tuple[None, bytes | None]:
+    """Menu principal en CARTE SEULE (épurée) — le texte est gardé en repli."""
+    state.state = "IDLE"
+    state.context["fallback_menu"] = _menu_main(client)
+    return (None, _welcome_card(tenant, client))
+
+
+def _handle_menu(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
     if text in ("1", "2", "3", "4"):
         if text == "1":
             state.state = "CHOOSING_DATE"
@@ -171,10 +185,10 @@ def _handle_menu(db, tenant, client, state, text: str) -> tuple[str, bytes | Non
             return (_menu_contact(db, tenant, client), None)
     # Entrée invalide / texte libre → on réaffiche le menu principal
     state.state = "IDLE"
-    return (_menu_main(client), card)
+    return _menu_principal(tenant, client, state)
 
 
-def _handle_date_choice(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
+def _handle_date_choice(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
     dates = _proposed_dates(tenant)
     if text.isdigit() and 1 <= int(text) <= len(dates):
         chosen = dates[int(text) - 1]
@@ -198,12 +212,12 @@ def _handle_date_choice(db, tenant, client, state, text: str) -> tuple[str, byte
         return ("\n".join(lines), None)
     if text in ("0",):
         state.state = "IDLE"
-        return (_menu_main(client), None)
+        return _menu_principal(tenant, client, state)
     # Invalide → réafficher les dates
     return (_menu_dates(db, tenant, client, state), None)
 
 
-def _handle_slot_choice(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
+def _handle_slot_choice(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
     if text in ("0",):
         state.state = "CHOOSING_DATE"
         return (_menu_dates(db, tenant, client, state), None)
@@ -229,7 +243,7 @@ def _handle_slot_choice(db, tenant, client, state, text: str) -> tuple[str, byte
     return _handle_date_choice(db, tenant, client, state, "1")  # repartir sur les dates
 
 
-def _handle_confirm_choice(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
+def _handle_confirm_choice(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
     slot_iso = state.context.get("slot")
     if text == "1" and slot_iso:
         start = datetime.fromisoformat(slot_iso)
@@ -284,16 +298,16 @@ def _handle_confirm_choice(db, tenant, client, state, text: str) -> tuple[str, b
         return (_menu_dates(db, tenant, client, state), None)
     if text == "3":
         state.state = "IDLE"
-        return (_menu_main(client), None)
+        return _menu_principal(tenant, client, state)
     # Invalide → re-proposer la confirmation
     state.state = "CONFIRMING"
     return (_confirm_prompt(tenant, client, state), None)
 
 
-def _handle_cancel_choice(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
+def _handle_cancel_choice(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
     if text == "0":
         state.state = "IDLE"
-        return (_menu_main(client), None)
+        return _menu_principal(tenant, client, state)
     appointments = state.context.get("appointments") or []
     if text.isdigit() and 1 <= int(text) <= len(appointments):
         try:
@@ -583,19 +597,23 @@ def _opt_out(db, tenant, client) -> None:
     logger.info("Opt-out patient %s (tenant %s)", client.wa_id, tenant.slug)
 
 
-def _send_reply(db, tenant, client, text: str, card: bytes | None = None) -> str:
+def _send_reply(db, tenant, client, text: str, card: bytes | None = None, fallback_text: str | None = None) -> str:
     """Envoie la réponse (carte visuelle optionnelle + texte) et la journalise.
 
-    Résilience : si l'envoi de l'image échoue (réseau, proxy, API…), on replie
-    sur le texte seul — un patient ne doit JAMAIS rester sans réponse.
+    - Carte + texte : image avec le texte en légende (confirmation).
+    - Carte seule : image sans légende (menu d'accueil épuré) — si l'envoi de
+      l'image échoue, on replie sur `fallback_text` (ou le texte) : un patient
+      ne doit JAMAIS rester sans réponse.
     """
     try:
         if card:
             try:
                 message_id = whatsapp.send_media_reminder(tenant, client.wa_id, card, caption=text)
             except Exception:  # noqa: BLE001 — repli : le texte seul vaut mieux que rien
-                logger.exception("Échec envoi image à %s — repli sur le texte seul", client.wa_id)
-                message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
+                logger.exception("Échec envoi image à %s — repli sur le texte", client.wa_id)
+                message_id = whatsapp.send_text_reminder(
+                    tenant, client.wa_id, fallback_text if fallback_text is not None else text
+                )
         else:
             message_id = whatsapp.send_text_reminder(tenant, client.wa_id, text)
     except Exception:  # noqa: BLE001 — ne jamais casser la conversation
@@ -607,7 +625,12 @@ def _send_reply(db, tenant, client, text: str, card: bytes | None = None) -> str
             tenant_id=tenant.id,
             meta_object="outbound_conversation",
             event_type="outbound",
-            payload={"wa_id": client.wa_id, "text": text, "message_id": message_id, "has_card": bool(card)},
+            payload={
+                "wa_id": client.wa_id,
+                "text": text or fallback_text or "",
+                "message_id": message_id,
+                "has_card": bool(card),
+            },
         )
     )
     db.commit()
