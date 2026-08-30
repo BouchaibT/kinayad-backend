@@ -27,7 +27,7 @@ INK = (26, 46, 31)
 INK_SOFT = (61, 82, 67)
 HEADER_SUB = (220, 235, 225)
 
-W, H = 800, 500
+W, H = 800, 600  # 4:3 — format standard WhatsApp, évite le letterboxing en plein écran
 _FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 
 
@@ -50,7 +50,7 @@ def _base_card() -> tuple[Image.Image, ImageDraw.ImageDraw]:
     d = ImageDraw.Draw(img)
     d.rectangle([0, 0, W, 130], fill=GREEN_DEEP)   # bandeau
     d.rectangle([0, 130, W, 134], fill=GOLD)        # filet or
-    d.ellipse([W - 160, H - 160, W + 40, H + 40], fill=CREAM_2)  # coin décoratif
+    d.ellipse([W - 160, H - 160, W + 40, H + 40], fill=(238, 222, 190))  # coin décoratif doré discret
     d.text((40, 28), "Kinayad", font=_font(42, True), fill=GOLD_SOFT)
     d.text((42, 88), "Rendez-vous & rappels WhatsApp", font=_font(18), fill=HEADER_SUB)
     return img, d
@@ -70,18 +70,18 @@ def _png_bytes(img: Image.Image) -> bytes:
 def card_welcome_bytes(cabinet_name: str = "Votre cabinet") -> bytes:
     img, d = _base_card()
     # Accueil professionnel de cabinet médical (pas de « Bienvenue ! » générique)
-    d.text((40, 165), "Bonjour,", font=_font(34, True), fill=GREEN_DEEP)
+    d.text((40, 185), "Bonjour,", font=_font(34, True), fill=GREEN_DEEP)
     lower = cabinet_name.lower()
     prefix = "vous êtes bien au" if any(
         lower.startswith(w) for w in ("cabinet", "clinique", "centre", "polyclinique", "cabinets")
     ) else "vous êtes bien au cabinet"
-    d.text((40, 214), prefix, font=_font(22), fill=INK_SOFT)
+    d.text((40, 240), prefix, font=_font(22), fill=INK_SOFT)
     f_name = _fit_font(d, cabinet_name, 30, W - 80, bold=True)
-    d.text((40, 250), cabinet_name, font=f_name, fill=GREEN)
-    d.text((40, 305), "Réservez votre rendez-vous", font=_font(22), fill=INK_SOFT)
-    d.text((40, 338), "en répondant par un chiffre :", font=_font(22), fill=INK_SOFT)
-    d.text((40, 385), "1  Prendre RDV        2  Annuler", font=_font(22), fill=INK)
-    d.text((40, 418), "3  Horaires              0  Arrêter", font=_font(22), fill=INK)
+    d.text((40, 280), cabinet_name, font=f_name, fill=GREEN)
+    d.text((40, 345), "Réservez votre rendez-vous", font=_font(22), fill=INK_SOFT)
+    d.text((40, 380), "en répondant par un chiffre :", font=_font(22), fill=INK_SOFT)
+    d.text((40, 435), "1  Prendre RDV        2  Annuler", font=_font(22), fill=INK)
+    d.text((40, 470), "3  Horaires              0  Arrêter", font=_font(22), fill=INK)
     d.text((40, H - 38), "100% WhatsApp — simple et accessible à tous", font=_font(17), fill=INK_SOFT)
     return _png_bytes(img)
 
@@ -93,15 +93,15 @@ def card_confirm_bytes(
     duration_min: int = 30,
 ) -> bytes:
     img, d = _base_card()
-    d.rounded_rectangle([40, 152, 330, 200], radius=24, fill=GOLD)
-    d.text((62, 159), "RDV CONFIRMÉ", font=_font(26, True), fill=GREEN_DEEP)
-    d.text((40, 218), "Cabinet", font=_font(20), fill=INK_SOFT)
+    d.rounded_rectangle([40, 170, 330, 218], radius=24, fill=GOLD)
+    d.text((62, 177), "RDV CONFIRMÉ", font=_font(26, True), fill=GREEN_DEEP)
+    d.text((40, 250), "Cabinet", font=_font(20), fill=INK_SOFT)
     f_name = _fit_font(d, cabinet_name, 28, W - 80, bold=True)
-    d.text((40, 250), cabinet_name, font=f_name, fill=INK)
-    d.text((40, 306), "Date", font=_font(20), fill=INK_SOFT)
-    d.text((40, 338), day, font=_font(28, True), fill=INK)
-    d.text((40, 394), "Heure", font=_font(20), fill=INK_SOFT)
-    d.text((40, 426), f"{time}  ({duration_min} min)", font=_font(28, True), fill=INK)
+    d.text((40, 285), cabinet_name, font=f_name, fill=INK)
+    d.text((40, 345), "Date", font=_font(20), fill=INK_SOFT)
+    d.text((40, 380), day, font=_font(28, True), fill=INK)
+    d.text((40, 440), "Heure", font=_font(20), fill=INK_SOFT)
+    d.text((40, 475), f"{time}  ({duration_min} min)", font=_font(28, True), fill=INK)
     d.text((40, H - 46), "Rappels automatiques 24h et 2h avant. À bientôt !", font=_font(17), fill=INK_SOFT)
     return _png_bytes(img)
 
@@ -113,14 +113,14 @@ def card_reminder_bytes(
     kind: str = "Rappel 24h",
 ) -> bytes:
     img, d = _base_card()
-    d.rounded_rectangle([40, 152, 300, 200], radius=24, fill=GREEN)
+    d.rounded_rectangle([40, 170, 300, 218], radius=24, fill=GREEN)
     f_kind = _fit_font(d, kind, 26, 240, bold=True)
-    d.text((62, 159), kind, font=f_kind, fill=WHITE)
-    d.text((40, 225), "Votre rendez-vous approche :", font=_font(22), fill=INK_SOFT)
+    d.text((62, 177), kind, font=f_kind, fill=WHITE)
+    d.text((40, 260), "Votre rendez-vous approche :", font=_font(22), fill=INK_SOFT)
     f_name = _fit_font(d, cabinet_name, 30, W - 80, bold=True)
-    d.text((40, 268), cabinet_name, font=f_name, fill=GREEN_DEEP)
-    d.text((40, 330), f"{day}  à  {time}", font=_font(28, True), fill=INK)
-    d.text((40, 392), "Tapez 1 pour confirmer votre présence.", font=_font(20), fill=INK_SOFT)
-    d.text((40, 424), "Tapez 2 pour annuler.", font=_font(20), fill=INK_SOFT)
+    d.text((40, 305), cabinet_name, font=f_name, fill=GREEN_DEEP)
+    d.text((40, 370), f"{day}  à  {time}", font=_font(28, True), fill=INK)
+    d.text((40, 435), "Tapez 1 pour confirmer votre présence.", font=_font(20), fill=INK_SOFT)
+    d.text((40, 468), "Tapez 2 pour annuler.", font=_font(20), fill=INK_SOFT)
     d.text((40, H - 50), "Un message suffit — merci de répondre", font=_font(17), fill=INK_SOFT)
     return _png_bytes(img)
