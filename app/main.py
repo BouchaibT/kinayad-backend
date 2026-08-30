@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import models  # noqa: F401  (charge les modèles)
-from app.api import admin, bookings, dashboard, evolution_webhook, internal, webhook
+from app.api import admin, auth, bookings, dashboard, evolution_webhook, internal, webhook
 from app.config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -35,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(bookings.router)
+app.include_router(auth.router)
 app.include_router(webhook.router)
 app.include_router(evolution_webhook.router)
 app.include_router(internal.router)

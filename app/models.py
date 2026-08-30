@@ -192,6 +192,12 @@ class Tenant(TimestampMixin, Base):
     availability_exceptions: Mapped[list["AvailabilityException"]] = relationship(
         back_populates="tenant", cascade="all, delete-orphan"
     )
+    users: Mapped[list["User"]] = relationship(
+        back_populates="tenant", cascade="all, delete-orphan"
+    )
+    sessions: Mapped[list["Session"]] = relationship(
+        back_populates="tenant", cascade="all, delete-orphan"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -604,3 +610,62 @@ class AvailabilityException(TimestampMixin, Base):
     reason: Mapped[str | None] = mapped_column(Text)
 
     tenant: Mapped["Tenant"] = relationship(back_populates="availability_exceptions")
+
+
+# ---------------------------------------------------------------------------
+# users — comptes praticiens (email + mot de passe), distincts des praticiens
+# ---------------------------------------------------------------------------
+
+
+class User(TimestampMixin, Base):
+    """Compte de connexion au dashboard (email + mot de passe haché).
+
+    Distinct de Practitioner : un cabinet peut avoir plusieurs utilisateurs
+    (médecin fondateur, secrétaire, associé…). Chaque user est rattaché à UN
+    tenant — l'isolation des données repose sur ce lien.
+    """
+
+    __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("email", name="uq_user_email"),)
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default="true")
+
+    tenant: Mapped["Tenant"] = relationship(back_populates="users")
+    sessions: Mapped[list["Session"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------------------
+# sessions — tokens opaques révocables (pas de JWT : révocation immédiate)
+# ---------------------------------------------------------------------------
+
+
+class Session(TimestampMixin, Base):
+    """Session de connexion : hash du token + tenant + expiration.
+
+    Le token brut n'est montré qu'UNE fois au login (renvoyé au client) ;
+    seul son hash SHA-256 est stocké. Révocable immédiatement (logout ou
+    suppression de la ligne). Durée de vie : 30 jours (config).
+    """
+
+    __tablename__ = "sessions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    user: Mapped["User"] = relationship(back_populates="sessions")
+    tenant: Mapped["Tenant"] = relationship(back_populates="sessions")

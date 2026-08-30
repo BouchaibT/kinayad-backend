@@ -48,5 +48,9 @@ class Settings(BaseSettings):
     demo_mode: bool = True
     demo_phone: str = "+212600000000"
 
+    # --- Sessions dashboard (tokens opaques révocables) ---
+    session_ttl_days: int = 30
+    login_rate_limit_per_minute: int = 10
+
 
 settings = Settings()

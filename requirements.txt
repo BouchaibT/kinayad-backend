@@ -7,12 +7,16 @@ psycopg[binary]>=3.1
 # Schémas / validation / config
 pydantic>=2.6
 pydantic-settings>=2.2
+email-validator>=2.0
 
 # Appels HTTP vers l'API Cloud Meta
 httpx>=0.27
 
 # Cartes visuelles WhatsApp (design Kinayad)
 pillow>=10
+
+# Authentification dashboard (hash des mots de passe)
+bcrypt>=4
 
 # Chiffrement du token WhatsApp (phase 2)
 cryptography>=42

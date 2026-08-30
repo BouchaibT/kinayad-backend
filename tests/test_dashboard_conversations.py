@@ -29,9 +29,14 @@ for text, mid in [("1", "m1"), ("1", "m2")]:
     r.raise_for_status()
     print(f"Karim tape « {text} » → {r.json()['summary']['messages'][-1]['replied']}")
 
+import sys
+
+sys.path.insert(0, ".")
+from tests.auth_helper import auth_headers
+
 r = httpx.get(
     f"{API}/public/dashboard/demo-cabinet-rabat/conversations",
-    headers={"X-Dashboard-Key": "kinayad-demo-2026"},
+    headers=auth_headers(),
 )
 r.raise_for_status()
 print("\nconversations en cours :", r.json())

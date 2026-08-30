@@ -20,6 +20,7 @@ from sqlalchemy import delete, select
 
 from app import models
 from app.db.session import SessionLocal, engine, init_db
+from app.services.auth import hash_password
 
 
 def main() -> int:
@@ -51,8 +52,18 @@ def main() -> int:
         s["evolution_instance_number"] = "212600000000"
         t.settings = s
         t.phone_number_id = 999999999
+
+        # Compte dashboard de test (auth par email/mot de passe, plus de mot de passe global)
+        if not db.scalar(select(models.User).where(models.User.email == "demo@kinayad.ma")):
+            db.add(models.User(
+                tenant_id=t.id,
+                email="demo@kinayad.ma",
+                password_hash=hash_password("demo-password-123"),
+                name="Démo Cabinet",
+                is_active=True,
+            ))
         db.commit()
-        print(f"✅ Instance Evolution + phone_number_id rattachés ({t.slug})")
+        print(f"✅ Instance Evolution + phone_number_id + compte démo ({t.slug})")
     finally:
         db.close()
     return 0
