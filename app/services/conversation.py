@@ -136,13 +136,13 @@ def _dispatch(db, tenant, client, state, text: str) -> tuple[str | None, bytes |
 
 
 def _handle_menu(db, tenant, client, state, text: str) -> tuple[str, bytes | None]:
-    # Carte de bienvenue au tout premier contact (client jamais vu)
+    # Carte de bienvenue à CHAQUE affichage du menu principal : le patient voit
+    # le design à chaque « Bonjour » / retour au menu, pas seulement au 1er contact.
     card = None
-    if client.last_interaction_at is None:
-        try:
-            card = cards.card_welcome_bytes(_cabinet_name(tenant, client))
-        except Exception:  # noqa: BLE001 — la carte ne doit jamais casser la conversation
-            logger.exception("Génération carte bienvenue échouée")
+    try:
+        card = cards.card_welcome_bytes(_cabinet_name(tenant, client))
+    except Exception:  # noqa: BLE001 — la carte ne doit jamais casser la conversation
+        logger.exception("Génération carte bienvenue échouée")
 
     if text in ("1", "2", "3", "4"):
         if text == "1":
