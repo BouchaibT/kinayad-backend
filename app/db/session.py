@@ -27,3 +27,22 @@ def init_db() -> None:
     from app import models  # noqa: PLC0415 — import tardif pour éviter cycle
 
     models.Base.metadata.create_all(bind=engine)
+    _ensure_column("clients", "consent_reminders_at", "TIMESTAMP")
+
+
+def _ensure_column(table: str, column: str, sql_type: str) -> None:
+    """Migration légère : ajoute une colonne si elle n'existe pas (SQLite/Postgres).
+
+    create_all ne modifie pas les tables existantes — cette vérification
+    idempotente couvre l'ajout de colonnes sans introduire Alembic.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if column in {c["name"] for c in inspector.get_columns(table)}:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+    import logging
+
+    logging.getLogger(__name__).info("Colonne %s.%s ajoutée (migration légère)", table, column)

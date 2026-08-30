@@ -93,3 +93,19 @@ Bouchaib (décideur, propriétaire), Hermès (code + tests locaux), Claude Code
 - Tenant de test resté en base (`cabinet-verif-prod`, créé pendant la
   vérification post-déploiement) : inoffensif, pas de route de suppression de
   tenant pour l'instant.
+
+## État de l'art (recherche août 2026) — RDV WhatsApp médicaux
+
+Marché : Meta Cloud API = référence (templates interactifs, fenêtre 24h) ;
+produits leaders Bot MD, Voiceoc, KaryaBuddyAI (résumé quotidien au médecin) ;
+marocains : TabibDoc Pro, DrivoHealth (RBAC), Docdialy (darija), WivoAgency.
+
+Bonnes pratiques : opt-in explicite + STOP dans chaque rappel ; 1-2 rappels
+max (24h + 1-2h) ; boutons Quick Reply ; analytics (no-show, heures gagnées) ;
+résumé quotidien WhatsApp au praticien ; réduction no-show 40-80%.
+
+Kinayad a : parcours par chiffres (unique pour non-lecteurs), cartes design,
+multi-cabinet isolé, agenda complet, opt-out conforme.
+À faire (par ordre de valeur) : 1) résumé quotidien WhatsApp au praticien,
+2) lien de RDV en ligne, 3) darija, 4) analytics, 5) opt-in explicite,
+6) intégration Google Agenda, 7) boutons (API Meta, offre Premium).

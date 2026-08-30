@@ -254,3 +254,25 @@ def admin_reset_password(user_id: uuid.UUID, payload: AdminUserReset, db: Sessio
     db.commit()
     logger.info("Mot de passe réinitialisé pour %s (toutes sessions révoquées)", user.email)
     return {"id": str(user.id), "email": user.email, "status": "reset"}
+
+
+@router.delete("/tenants/{slug}/clients/{client_id}")
+def admin_delete_client(slug: str, client_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Droit d'effacement (RGPD / loi 09-08) : supprime un patient et toutes ses
+    données (RDV, rappels, conversation) — cascade via les relations du modèle."""
+    tenant = db.scalar(select(models.Tenant).where(models.Tenant.slug == slug))
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Cabinet introuvable")
+    client = db.get(models.Client, client_id)
+    if not client or client.tenant_id != tenant.id:
+        raise HTTPException(status_code=404, detail="Patient introuvable pour ce cabinet")
+    wa_id = client.wa_id
+    # Suppression des dépendances (RDV → rappels en cascade, conversation) puis du client
+    for appt in list(client.appointments):
+        db.delete(appt)
+    if client.conversation:
+        db.delete(client.conversation)
+    db.delete(client)
+    db.commit()
+    logger.info("Données patient effacées : %s (tenant %s) — droit d'effacement", wa_id, slug)
+    return {"wa_id": wa_id, "status": "deleted"}

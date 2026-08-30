@@ -133,6 +133,7 @@ def _seed_clients(db, tenant: models.Tenant) -> list[models.Client]:
                 name=c["name"],
                 phone_e164=f"+{c['wa_id']}",
                 preferred_language=c["language"],
+                consent_reminders_at=datetime.now(timezone.utc),  # démo : consentement donné
                 last_interaction_at=datetime.now(timezone.utc) - timedelta(hours=2),
             )
             db.add(client)

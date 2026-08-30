@@ -248,6 +248,9 @@ class Client(TimestampMixin, Base):
     )
     opted_out_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     opted_out_reason: Mapped[str | None] = mapped_column(Text)
+    # Consentement explicite aux rappels WhatsApp (loi 09-08 / RGPD) — requis
+    # pour planifier les rappels ; NULL = consentement jamais donné.
+    consent_reminders_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     tenant: Mapped["Tenant"] = relationship(back_populates="clients")

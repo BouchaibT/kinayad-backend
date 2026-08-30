@@ -310,6 +310,25 @@ def dashboard_create_booking(slug: str, payload: DashboardBookingCreate, db: Ses
         )
         practitioner_id = practitioner.id if practitioner else None
 
+    # Consentement aux rappels : le praticien, responsable de traitement, informe
+    # le patient (loi 09-08 / RGPD). Marqué AVANT la création pour que les
+    # rappels soient bien planifiés. S'il n'a jamais consenti, on enregistre ce
+    # consentement implicite du praticien.
+    wa = normalize_wa_id(payload.wa_id)
+    client = db.scalar(
+        select(models.Client).where(models.Client.tenant_id == tenant.id, models.Client.wa_id == wa)
+    )
+    if client is None:
+        client = models.Client(
+            tenant_id=tenant.id, wa_id=wa, name=payload.client_name,
+            phone_e164=f"+{wa}", preferred_language="fr",
+        )
+        db.add(client)
+        db.flush()
+    if client.consent_reminders_at is None:
+        client.consent_reminders_at = datetime.now(timezone.utc)
+    db.commit()
+
     appointment, reminders = create_appointment_and_schedule(
         db,
         tenant_id=tenant.id,

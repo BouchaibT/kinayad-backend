@@ -129,6 +129,8 @@ def _dispatch(db, tenant, client, state, text: str) -> tuple[str | None, bytes |
     # continuer") se retrouve désinscrit au lieu d'accéder au menu.
     if state.state == "ASKING_NAME":
         return _handle_asking_name(db, tenant, client, state, text)
+    if state.state == "CONSENT_ASKING":
+        return _handle_consent_asking(db, tenant, client, state, text)
 
     # Opt-out disponible depuis n'importe quel autre état
     if lowered in STOP_WORDS:
@@ -192,18 +194,56 @@ def _handle_asking_name(db, tenant, client, state, text: str) -> tuple[str | Non
         state.context = {}
         return (_t(client, "🚫 Vous ne recevrez plus de messages. Pour revenir, écrivez-nous à tout moment. 👋",
                            "🚫 لن تصلك رسائل بعد الآن. للعودة، راسلنا في أي وقت. 👋"), None)
-    state.state = "IDLE"
     # Un chiffre / un refus → on passe (le patient garde son pushName ou reste anonyme)
     if cleaned.isdigit() or lowered in ("0", "passer", "skip", "non", "no"):
-        return (_menu_main(client), None)
+        state.state = "CONSENT_ASKING"
+        return _consent_question(client)
     # Un texte → c'est le nom du patient
     name = " ".join(w.capitalize() for w in cleaned.split())[:120]
     if name:
         client.name = name
         db.commit()
         logger.info("Nom patient enregistré : %s (%s)", name, client.wa_id)
-        return (_t(client, f"Merci {name} ! 👋\n\n", f"شكرًا {name}! 👋\n\n") + _menu_main(client), None)
-    return (_menu_main(client), None)
+        state.state = "CONSENT_ASKING"
+        return _consent_question(client)
+    state.state = "CONSENT_ASKING"
+    return _consent_question(client)
+
+
+def _consent_question(client) -> tuple[str, None]:
+    """Question du consentement aux rappels (loi 09-08 / RGPD) — après le nom."""
+    state_note = None  # (la signature est (str, card); état géré par l'appelant)
+    return (
+        _t(
+            client,
+            "Souhaitez-vous recevoir des rappels WhatsApp avant vos rendez-vous ? "
+            "(par exemple 24h et 2h avant)\n"
+            "1️⃣ Oui, je suis d'accord\n"
+            "2️⃣ Non, sans rappels",
+            "هل ترغب في استلام تذكيرات واتساب قبل مواعيدك؟ (مثلاً قبل 24 ساعة وساعتين)\n"
+            "1️⃣ نعم، أوافق\n"
+            "2️⃣ لا، بدون تذكيرات",
+        ),
+        state_note,
+    )
+
+
+def _handle_consent_asking(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
+    """Traite la réponse au consentement (premier contact)."""
+    cleaned = text.strip()
+    state.state = "IDLE"
+    if cleaned == "1":
+        client.consent_reminders_at = datetime.now(timezone.utc)
+        db.commit()
+        logger.info("Consentement rappels ACCEPTÉ : %s (%s)", client.name or client.wa_id, client.wa_id)
+        return (_t(client, "Merci ! Vous recevrez un rappel 24h et 2h avant chaque rendez-vous. 👋\n\n",
+                           "شكرًا! ستصلك تذكيرات قبل كل موعد بـ24 ساعة وساعتين. 👋\n\n") + _menu_main(client), None)
+    if cleaned in ("2", "0"):
+        logger.info("Consentement rappels REFUSÉ : %s (%s)", client.name or client.wa_id, client.wa_id)
+        return (_t(client, "D'accord, aucun rappel ne vous sera envoyé. Vous pouvez revenir à tout moment. 👋\n\n",
+                           "حسنًا، لن تصلك أي تذكيرات. يمكنك العودة في أي وقت. 👋\n\n") + _menu_main(client), None)
+    # Réponse invalide → on repose la question
+    return _consent_question(client)
 
 
 def _menu_principal(tenant, client, state) -> tuple[None, bytes | None]:

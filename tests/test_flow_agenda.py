@@ -96,6 +96,7 @@ def main() -> int:
     # --- 4. Le patient réserve le lundi : les créneaux 08h-10h ne doivent PAS apparaître ---
     send("Bonjour")
     send("1")          # passer la question du nom (accessibilité)
+    send("1")          # consentement aux rappels (oui)
     send("1")          # prendre RDV
     send("1")          # lundi 31/08
     logs = outbound_logs()

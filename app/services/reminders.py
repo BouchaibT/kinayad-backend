@@ -105,10 +105,14 @@ def create_appointment_and_schedule(
     # flush pour obtenir l'id sans commit (reste dans la transaction)
     db.flush()
 
-    reminders = [
-        _schedule(db, appointment, models.ReminderType.REMINDER_24H, start_at - timedelta(hours=settings.reminder_24h_hours)),
-        _schedule(db, appointment, models.ReminderType.REMINDER_2H, start_at - timedelta(hours=settings.reminder_2h_hours)),
-    ]
+    # Rappels planifiés UNIQUEMENT avec consentement explicite (loi 09-08 / RGPD).
+    # Sans consentement : RDV confirmé sans rappels.
+    reminders: list[models.ReminderScheduled] = []
+    if client.consent_reminders_at is not None:
+        reminders = [
+            _schedule(db, appointment, models.ReminderType.REMINDER_24H, start_at - timedelta(hours=settings.reminder_24h_hours)),
+            _schedule(db, appointment, models.ReminderType.REMINDER_2H, start_at - timedelta(hours=settings.reminder_2h_hours)),
+        ]
     db.commit()
     db.refresh(appointment)
     return appointment, reminders
