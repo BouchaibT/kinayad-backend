@@ -445,7 +445,10 @@ def _menu_dates(db, tenant, client, state) -> str:
 
 def _menu_hours(tenant, client) -> str:
     hours = (tenant.settings or {}).get("opening_hours") or DEFAULT_OPENING_HOURS
+    address = (tenant.settings or {}).get("address")
     lines = [_t(client, "🕐 Horaires du cabinet :", "🕐 أوقات عمل العيادة:")]
+    if address:
+        lines.append(f"📍 {address}")
     if isinstance(hours, dict) and hours:
         labels = {"mon": "Lun", "tue": "Mar", "wed": "Mer", "thu": "Jeu", "fri": "Ven", "sat": "Sam", "sun": "Dim"}
         labels_ar = {"mon": "الاثنين", "tue": "الثلاثاء", "wed": "الأربعاء", "thu": "الخميس", "fri": "الجمعة", "sat": "السبت", "sun": "الأحد"}
@@ -473,6 +476,9 @@ def _menu_contact(db, tenant, client) -> str:
         return _t(client, "📞 Appelez-nous sur WhatsApp pour toute question.\n0️⃣ ↩️ Retour",
                          "📞 اتصلوا بنا على واتساب لأي استفسار.\n0️⃣ ↩️ العودة")
     lines = [_t(client, "📞 Pour joindre le cabinet :", "📞 للاتصال بالعيادة:")]
+    address = (tenant.settings or {}).get("address")
+    if address:
+        lines.append(f"📍 {address}")
     for p in practitioners:
         if p.phone:
             lines.append(f"👨‍⚕️ {p.name} — {p.phone}")
