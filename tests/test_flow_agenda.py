@@ -19,10 +19,13 @@ import httpx
 
 API = "http://127.0.0.1:8000"
 SLUG = "demo-cabinet-rabat"
-KEY = "kinayad-demo-2026"
 INSTANCE = "kinayad-demo"
 PATIENT = "21261234001"
-H = {"X-Dashboard-Key": KEY}
+
+sys.path.insert(0, ".")
+from tests.auth_helper import auth_headers
+
+H = auth_headers()
 HJ = {**H, "Content-Type": "application/json"}
 
 

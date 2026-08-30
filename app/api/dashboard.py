@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app import models
+from app.api.auth import require_tenant_auth
 from app.config import settings
 from app.db.session import SessionLocal, get_db
 from app.services.reminders import (
@@ -39,13 +40,10 @@ DEFAULT_OPENING_HOURS = {
 _WEEKDAY_LABELS = {"mon": "Lundi", "tue": "Mardi", "wed": "Mercredi", "thu": "Jeudi", "fri": "Vendredi", "sat": "Samedi", "sun": "Dimanche"}
 
 
-def require_dashboard_key(x_dashboard_key: str = Header(default="")) -> None:
-    if not settings.dashboard_password or x_dashboard_key != settings.dashboard_password:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Mot de passe invalide")
-
-
 router = APIRouter(
-    prefix="/public/dashboard", tags=["dashboard"], dependencies=[Depends(require_dashboard_key)]
+    prefix="/public/dashboard",
+    tags=["dashboard"],
+    dependencies=[Depends(require_tenant_auth)],
 )
 
 

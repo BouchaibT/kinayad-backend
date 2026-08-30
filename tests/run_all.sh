@@ -30,4 +30,7 @@ python tests/test_dashboard_conversations.py >/dev/null && echo "OK"
 echo "==> TEST 4 — agenda praticien (disponibilités, blocages, déplacement)"
 python tests/test_flow_agenda.py | tail -1
 
+echo "==> TEST 5 — auth multi-cabinet + isolation"
+python tests/test_flow_auth.py | tail -1
+
 echo "==> Batterie terminée"

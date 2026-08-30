@@ -7,6 +7,7 @@ rejouer la même requête ne duplique rien (upsert sur le slug / nom).
 """
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -19,6 +20,9 @@ from sqlalchemy.orm import Session
 from app import models
 from app.api.bookings import require_api_key
 from app.db.session import get_db
+from app.services import auth as auth_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_api_key)])
 
@@ -197,3 +201,56 @@ def cancel_appointment(appointment_id: uuid.UUID, db: Session = Depends(get_db))
             r.status = models.ReminderStatus.CANCELLED
     db.commit()
     return {"id": str(appointment.id), "status": "cancelled", "already": False}
+
+
+# ---------------------------------------------------------------------------
+# Comptes dashboard — création admin + reset de mot de passe
+# ---------------------------------------------------------------------------
+
+
+class AdminUserCreate(BaseModel):
+    email: str = Field(..., description="Email de connexion du compte")
+    password: str = Field(..., min_length=8, max_length=128)
+    name: str | None = None
+
+
+class AdminUserReset(BaseModel):
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+@router.post("/tenants/{slug}/users")
+def admin_create_user(slug: str, payload: AdminUserCreate, db: Session = Depends(get_db)):
+    """Crée un compte dashboard pour un cabinet existant (ex. secrétaire, associé)."""
+    tenant = db.scalar(select(models.Tenant).where(models.Tenant.slug == slug))
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Cabinet introuvable")
+    email = payload.email.lower().strip()
+    if db.scalar(select(models.User).where(models.User.email == email)):
+        raise HTTPException(status_code=409, detail="Un compte existe déjà avec cet email")
+    user = models.User(
+        tenant_id=tenant.id,
+        email=email,
+        password_hash=auth_service.hash_password(payload.password),
+        name=payload.name,
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    logger.info("Compte admin créé : %s (tenant %s)", email, slug)
+    return {"id": str(user.id), "email": user.email, "tenant_slug": slug}
+
+
+@router.post("/users/{user_id}/reset-password")
+def admin_reset_password(user_id: uuid.UUID, payload: AdminUserReset, db: Session = Depends(get_db)):
+    """Réinitialise le mot de passe d'un compte (sans email — action admin directe)."""
+    user = db.get(models.User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Compte introuvable")
+    user.password_hash = auth_service.hash_password(payload.new_password)
+    # Révocation de toutes les sessions du compte (sécurité : déconnexion forcée)
+    for s in db.scalars(select(models.Session).where(models.Session.user_id == user.id)).all():
+        s.revoked_at = datetime.now(timezone.utc)
+    db.commit()
+    logger.info("Mot de passe réinitialisé pour %s (toutes sessions révoquées)", user.email)
+    return {"id": str(user.id), "email": user.email, "status": "reset"}

@@ -25,6 +25,7 @@ from app.models import (  # noqa: F401
     ReminderScheduled,
     ReminderStatus,
     ReminderType,
+    Session,
     TemplateCategory,
     TemplateStatus,
     Tenant,
@@ -32,6 +33,7 @@ from app.models import (  # noqa: F401
     TenantStatus,
     TimestampMixin,
     UsageMeta,
+    User,
 )
 
 __all__ = (
@@ -51,6 +53,7 @@ __all__ = (
     "ReminderScheduled",
     "ReminderStatus",
     "ReminderType",
+    "Session",
     "TemplateCategory",
     "TemplateStatus",
     "Tenant",
@@ -58,4 +61,5 @@ __all__ = (
     "TenantStatus",
     "TimestampMixin",
     "UsageMeta",
+    "User",
 )
