@@ -58,14 +58,17 @@ def main() -> int:
     print("=" * 60)
 
     # Étape 1 : premier contact (texte libre, patient illettré)
+    # → le bot demande d'abord le nom (un chiffre = passer, accessibilité)
     send("Bonjour docteur", "1er contact")
-    # Étape 2 : menu → « 1 » = prendre RDV
+    # Étape 2 : réponse à la question du nom → « 1 » = passer → menu principal
+    send("1", "passer la question du nom")
+    # Étape 3 : menu → « 1 » = prendre RDV
     send("1", "choix menu RDV")
-    # Étape 3 : dates → « 1 » = premier jour proposé
+    # Étape 4 : dates → « 1 » = premier jour proposé
     send("1", "choix jour")
-    # Étape 4 : créneaux → « 2 » = deuxième créneau
+    # Étape 5 : créneaux → « 2 » = deuxième créneau
     send("2", "choix créneau")
-    # Étape 5 : confirmation → « 1 » = oui
+    # Étape 6 : confirmation → « 1 » = oui
     send("1", "confirmation")
 
     print("\n" + "=" * 60)
