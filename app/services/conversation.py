@@ -56,7 +56,12 @@ DEFAULT_OPENING_HOURS = {         # lundi → vendredi 09h-12h / 14h-17h
 }
 APPOINTMENT_DURATION_MIN = 30
 
-STOP_WORDS = {"stop", "arret", "arrêt", "quit", "0"}
+STOP_WORDS = {"stop", "arret", "arrêt", "quit"}
+# "0" n'est PAS un mot d'arrêt global : il signifie "retour" dans presque tous
+# les sous-menus (dates, créneaux, annulation, Horaires, Contact) et n'opte
+# le patient hors WhatsApp que depuis le menu principal lui-même (voir
+# _handle_menu). Le confondre a déjà désinscrit des patients qui tapaient
+# simplement "0" pour revenir en arrière.
 _ARABIC_RE = re.compile(r"[\u0600-\u06FF]")
 
 _WEEKDAYS_FR = {0: "Lundi", 1: "Mardi", 2: "Mercredi", 3: "Jeudi", 4: "Vendredi", 5: "Samedi", 6: "Dimanche"}
@@ -141,6 +146,11 @@ def _dispatch(db, tenant, client, state, text: str) -> tuple[str | None, bytes |
 
     if state.state in ("IDLE", "MENU"):
         return _handle_menu(db, tenant, client, state, text)
+    if state.state in ("VIEWING_HOURS", "VIEWING_CONTACT"):
+        # Écran d'information en lecture seule : tout input ramène au menu
+        # (le "0️⃣ ↩️ Retour" affiché n'est qu'une des façons d'y arriver).
+        state.state = "IDLE"
+        return _menu_principal(tenant, client, state)
     if state.state == "CHOOSING_DATE":
         return _handle_date_choice(db, tenant, client, state, text)
     if state.state == "CHOOSING_SLOT":
@@ -174,9 +184,9 @@ def _handle_asking_name(db, tenant, client, state, text: str) -> tuple[str | Non
     """Traite la réponse à la question du nom (premier contact)."""
     cleaned = text.strip()
     lowered = cleaned.lower()
-    # Un vrai mot d'arrêt (pas "0", qui ne veut dire que "passer" ici) reste
-    # un opt-out même pendant cette étape.
-    if lowered in STOP_WORDS - {"0"}:
+    # Un vrai mot d'arrêt reste un opt-out même pendant cette étape ("0" ne
+    # veut dire que "passer" ici, il n'est plus dans STOP_WORDS de toute façon).
+    if lowered in STOP_WORDS:
         _opt_out(db, tenant, client)
         state.state = "IDLE"
         state.context = {}
@@ -224,11 +234,19 @@ def _handle_menu(db, tenant, client, state, text: str) -> tuple[str | None, byte
             lines.append(_t(client, "0️⃣ ↩️ Revenir au menu", "0️⃣ ↩️ العودة للقائمة"))
             return ("\n".join(lines), None)
         if text == "3":
-            state.state = "IDLE"
+            state.state = "VIEWING_HOURS"
             return (_menu_hours(tenant, client), None)
         if text == "4":
-            state.state = "IDLE"
+            state.state = "VIEWING_CONTACT"
             return (_menu_contact(db, tenant, client), None)
+    if text == "0":
+        # "0" depuis le menu principal lui-même = arrêter les messages
+        # (promis par la carte de bienvenue : "0 Arrêter").
+        _opt_out(db, tenant, client)
+        state.state = "IDLE"
+        state.context = {}
+        return (_t(client, "🚫 Vous ne recevrez plus de messages. Pour revenir, écrivez-nous à tout moment. 👋",
+                           "🚫 لن تصلك رسائل بعد الآن. للعودة، راسلنا في أي وقت. 👋"), None)
     # Entrée invalide / texte libre → on réaffiche le menu principal
     state.state = "IDLE"
     return _menu_principal(tenant, client, state)
