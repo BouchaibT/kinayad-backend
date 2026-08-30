@@ -28,6 +28,7 @@ def init_db() -> None:
 
     models.Base.metadata.create_all(bind=engine)
     _ensure_column("clients", "consent_reminders_at", "TIMESTAMP")
+    _ensure_column("appointments", "reminders_consent_pending", "BOOLEAN")
 
 
 def _ensure_column(table: str, column: str, sql_type: str) -> None:

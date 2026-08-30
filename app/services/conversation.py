@@ -95,6 +95,18 @@ def handle_incoming_message(
     if client.opted_out_at is not None:
         return None
 
+    # RDV créé par le praticien sans consentement : on traite la réponse du
+    # patient à la demande de rappels (opt-in tardif, loi 09-08 / RGPD)
+    pending = db.scalar(
+        select(models.Appointment).where(
+            models.Appointment.client_id == client.id,
+            models.Appointment.reminders_consent_pending.is_(True),
+            models.Appointment.start_at >= datetime.now(timezone.utc),
+        ).order_by(models.Appointment.start_at.asc()).limit(1)
+    )
+    if pending:
+        return _handle_pending_consent(db, tenant, client, pending, text.strip())
+
     state = _get_or_create_state(db, tenant, client)
     _expire_if_stale(state)
 
@@ -208,6 +220,47 @@ def _handle_asking_name(db, tenant, client, state, text: str) -> tuple[str | Non
         return _consent_question(client)
     state.state = "CONSENT_ASKING"
     return _consent_question(client)
+
+
+def _handle_pending_consent(db, tenant, client, appointment, text: str) -> str:
+    """Traite la réponse du patient à la demande de rappels (RDV créé par le praticien).
+
+    « 1 » = consentement → rappels 24h/2h planifiés ; « 2 »/« 0 » = refus →
+    aucun rappel ; toute autre réponse → on repose la question.
+    """
+    cleaned = text.strip()
+    if cleaned == "1":
+        appointment.reminders_consent_pending = False
+        client.consent_reminders_at = datetime.now(timezone.utc)
+        db.commit()
+        from app.services.reminders import plan_reminders_for_appointment
+
+        plan_reminders_for_appointment(db, appointment)
+        logger.info("Consentement tardif ACCEPTÉ (RDV %s, %s)", appointment.id, client.wa_id)
+        reply = _t(
+            client,
+            "Merci ! Vous recevrez un rappel 24h et 2h avant votre rendez-vous. 👋\n\n",
+            "شكرًا! ستصلك تذكيرات قبل موعدك بـ24 ساعة وساعتين. 👋\n\n",
+        ) + _menu_main(client)
+    elif cleaned in ("2", "0"):
+        appointment.reminders_consent_pending = False
+        db.commit()
+        logger.info("Consentement tardif REFUSÉ (RDV %s, %s)", appointment.id, client.wa_id)
+        reply = _t(
+            client,
+            "D'accord, aucun rappel ne vous sera envoyé. 👋\n\n",
+            "حسنًا، لن تصلك أي تذكيرات. 👋\n\n",
+        ) + _menu_main(client)
+    else:
+        reply = _t(
+            client,
+            "Votre rendez-vous est confirmé. Souhaitez-vous recevoir des rappels avant ?\n1️⃣ Oui\n2️⃣ Non",
+            "تم تأكيد موعدك. هل ترغب في استلام تذكيرات؟\n1️⃣ نعم\n2️⃣ لا",
+        )
+    _send_reply(db, tenant, client, reply)
+    client.last_interaction_at = datetime.now(timezone.utc)
+    db.commit()
+    return reply
 
 
 def _consent_question(client) -> tuple[str, None]:

@@ -162,6 +162,36 @@ def _schedule(
     return r
 
 
+def plan_reminders_for_appointment(db: Session, appointment: models.Appointment) -> list[models.ReminderScheduled]:
+    """Planifie les rappels 24h/2h d'un RDV existant (après consentement tardif).
+
+    Réutilise les lignes existantes si présentes (contrainte UNIQUE
+    appointment_id+type) — même pattern que reschedule_appointment.
+    """
+    plan = [
+        (models.ReminderType.REMINDER_24H, appointment.start_at - timedelta(hours=settings.reminder_24h_hours)),
+        (models.ReminderType.REMINDER_2H, appointment.start_at - timedelta(hours=settings.reminder_2h_hours)),
+    ]
+    reminders: list[models.ReminderScheduled] = []
+    for rtype, send_at in plan:
+        existing = next((r for r in appointment.reminders if r.type == rtype), None)
+        if existing:
+            existing.status = models.ReminderStatus.PENDING
+            existing.send_at = send_at
+            existing.wamid = None
+            existing.error_message = None
+            existing.attempts = 0
+            existing.processed_at = None
+            reminders.append(existing)
+        else:
+            reminders.append(_schedule(db, appointment, rtype, send_at))
+    appointment.reminder_24h_sent_at = None
+    appointment.reminder_2h_sent_at = None
+    db.commit()
+    logger.info("Rappels planifiés pour RDV %s (consentement tardif)", appointment.id)
+    return reminders
+
+
 def reschedule_appointment(
     db: Session,
     appointment: models.Appointment,
