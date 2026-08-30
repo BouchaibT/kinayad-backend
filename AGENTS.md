@@ -74,9 +74,13 @@ Bouchaib (décideur, propriétaire), Hermès (code + tests locaux), Claude Code
 
 ## État courant (à mettre à jour à chaque session)
 
-- Auth multi-cabinet : PR #5 (backend) + PR #1 (frontend deploy) — à merger
-  ensemble (transition : le mot de passe global disparaît).
+- Auth multi-cabinet : **FAIT** — PR #5 (backend) + PR #1 (frontend deploy)
+  mergées et déployées ensemble le 30/08. Ancien mot de passe global désactivé
+  (401 confirmé). Isolation vérifiée en vraie prod (deux tenants distincts).
+- Compte admin du cabinet existant (Dr. Hachmi Bouchaib) : **FAIT** — créé et
+  testé (connexion confirmée).
 - Adresse du cabinet : branche backend `feat/adresse-cabinet` (endpoint `PUT
-  /{slug}/address`) + frontend — revue séparée à faire.
-- Compte admin du cabinet existant (Dr. Hachmi Bouchaib) : à créer via
-  `POST /admin/tenants/cabinet-dr-hachmi-bouchaib/users` à la mise en prod.
+  /{slug}/address`) — revue séparée à faire, pas encore de PR ouverte.
+- Tenant de test resté en base (`cabinet-verif-prod`, créé pendant la
+  vérification post-déploiement) : inoffensif, pas de route de suppression de
+  tenant pour l'instant.
