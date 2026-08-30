@@ -128,6 +128,14 @@ def _dispatch(db, tenant, client, state, text: str) -> tuple[str | None, bytes |
 
     # Un chiffre ? sinon on (re)propose le menu — TOUJOURS ramener au menu,
     # c'est la base d'une interface accessible sans lecture.
+    # Nom du patient : demandé au tout premier contact (sans bloquer ceux
+    # qui ne peuvent pas répondre par écrit : un chiffre = passer).
+    if state.state == "ASKING_NAME":
+        return _handle_asking_name(db, tenant, client, state, text)
+    if client.last_interaction_at is None:
+        state.state = "ASKING_NAME"
+        return (_ask_name_text(client), _welcome_card(tenant, client))
+
     if state.state in ("IDLE", "MENU"):
         return _handle_menu(db, tenant, client, state, text)
     if state.state == "CHOOSING_DATE":
@@ -148,6 +156,32 @@ def _welcome_card(tenant, client) -> bytes | None:
     except Exception:  # noqa: BLE001
         logger.exception("Génération carte bienvenue échouée")
         return None
+
+
+def _ask_name_text(client) -> str:
+    """Question du nom au premier contact — un chiffre = passer (accessibilité)."""
+    return _t(
+        client,
+        "Bienvenue ! 👋 Comment vous appelez-vous ?\nRépondez avec votre prénom et nom, ou tapez 0 pour continuer.",
+        "مرحبًا! 👋 ما اسمك؟\nأجب باسمك الأول والأخير، أو اكتب 0 للمتابعة.",
+    )
+
+
+def _handle_asking_name(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
+    """Traite la réponse à la question du nom (premier contact)."""
+    state.state = "IDLE"
+    cleaned = text.strip()
+    # Un chiffre / un refus → on passe (le patient garde son pushName ou reste anonyme)
+    if cleaned.isdigit() or cleaned.lower() in ("0", "passer", "skip", "non", "no"):
+        return (_menu_main(client), None)
+    # Un texte → c'est le nom du patient
+    name = " ".join(w.capitalize() for w in cleaned.split())[:120]
+    if name:
+        client.name = name
+        db.commit()
+        logger.info("Nom patient enregistré : %s (%s)", name, client.wa_id)
+        return (_t(client, f"Merci {name} ! 👋\n\n", f"شكرًا {name}! 👋\n\n") + _menu_main(client), None)
+    return (_menu_main(client), None)
 
 
 def _menu_principal(tenant, client, state) -> tuple[None, bytes | None]:
@@ -399,18 +433,23 @@ def _menu_hours(tenant, client) -> str:
 
 
 def _menu_contact(db, tenant, client) -> str:
-    practitioner = db.scalar(
+    practitioners = db.scalars(
         select(models.Practitioner).where(
             models.Practitioner.tenant_id == tenant.id,
             models.Practitioner.is_active.is_(True),
-        ).order_by(models.Practitioner.created_at.asc()).limit(1)
-    )
-    phone = practitioner.phone if practitioner else None
-    if phone:
-        return _t(client, f"📞 Pour joindre le cabinet : {phone}\n0️⃣ ↩️ Retour",
-                         f"📞 للاتصال بالعيادة: {phone}\n0️⃣ ↩️ العودة")
-    return _t(client, "📞 Appelez-nous sur WhatsApp pour toute question.\n0️⃣ ↩️ Retour",
-                     "📞 اتصلوا بنا على واتساب لأي استفسار.\n0️⃣ ↩️ العودة")
+        ).order_by(models.Practitioner.created_at.asc())
+    ).all()
+    if not practitioners:
+        return _t(client, "📞 Appelez-nous sur WhatsApp pour toute question.\n0️⃣ ↩️ Retour",
+                         "📞 اتصلوا بنا على واتساب لأي استفسار.\n0️⃣ ↩️ العودة")
+    lines = [_t(client, "📞 Pour joindre le cabinet :", "📞 للاتصال بالعيادة:")]
+    for p in practitioners:
+        if p.phone:
+            lines.append(f"👨‍⚕️ {p.name} — {p.phone}")
+        else:
+            lines.append(f"👨‍⚕️ {p.name}")
+    lines.append(_t(client, "0️⃣ ↩️ Retour", "0️⃣ ↩️ العودة"))
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
