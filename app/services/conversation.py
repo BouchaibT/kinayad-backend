@@ -118,7 +118,14 @@ def _dispatch(db, tenant, client, state, text: str) -> tuple[str | None, bytes |
     """Retourne (texte_de_la_réponse, carte_image_optionnelle)."""
     lowered = text.lower()
 
-    # Opt-out disponible depuis n'importe quel état
+    # Nom du patient : demandé au tout premier contact. Vérifié AVANT les mots
+    # d'arrêt globaux car "0" y a un sens différent ("passer la question") —
+    # sinon un nouveau patient qui suit l'instruction du prompt ("tapez 0 pour
+    # continuer") se retrouve désinscrit au lieu d'accéder au menu.
+    if state.state == "ASKING_NAME":
+        return _handle_asking_name(db, tenant, client, state, text)
+
+    # Opt-out disponible depuis n'importe quel autre état
     if lowered in STOP_WORDS:
         _opt_out(db, tenant, client)
         state.state = "IDLE"
@@ -128,10 +135,6 @@ def _dispatch(db, tenant, client, state, text: str) -> tuple[str | None, bytes |
 
     # Un chiffre ? sinon on (re)propose le menu — TOUJOURS ramener au menu,
     # c'est la base d'une interface accessible sans lecture.
-    # Nom du patient : demandé au tout premier contact (sans bloquer ceux
-    # qui ne peuvent pas répondre par écrit : un chiffre = passer).
-    if state.state == "ASKING_NAME":
-        return _handle_asking_name(db, tenant, client, state, text)
     if client.last_interaction_at is None:
         state.state = "ASKING_NAME"
         return (_ask_name_text(client), _welcome_card(tenant, client))
@@ -169,10 +172,19 @@ def _ask_name_text(client) -> str:
 
 def _handle_asking_name(db, tenant, client, state, text: str) -> tuple[str | None, bytes | None]:
     """Traite la réponse à la question du nom (premier contact)."""
-    state.state = "IDLE"
     cleaned = text.strip()
+    lowered = cleaned.lower()
+    # Un vrai mot d'arrêt (pas "0", qui ne veut dire que "passer" ici) reste
+    # un opt-out même pendant cette étape.
+    if lowered in STOP_WORDS - {"0"}:
+        _opt_out(db, tenant, client)
+        state.state = "IDLE"
+        state.context = {}
+        return (_t(client, "🚫 Vous ne recevrez plus de messages. Pour revenir, écrivez-nous à tout moment. 👋",
+                           "🚫 لن تصلك رسائل بعد الآن. للعودة، راسلنا في أي وقت. 👋"), None)
+    state.state = "IDLE"
     # Un chiffre / un refus → on passe (le patient garde son pushName ou reste anonyme)
-    if cleaned.isdigit() or cleaned.lower() in ("0", "passer", "skip", "non", "no"):
+    if cleaned.isdigit() or lowered in ("0", "passer", "skip", "non", "no"):
         return (_menu_main(client), None)
     # Un texte → c'est le nom du patient
     name = " ".join(w.capitalize() for w in cleaned.split())[:120]
