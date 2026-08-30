@@ -72,6 +72,15 @@ Bouchaib (décideur, propriétaire), Hermès (code + tests locaux), Claude Code
 - **Signaler TOUS les commits d'une branche** dans les messages (un commit non
   décrit a failli introduire un appel à un endpoint non mergé).
 
+## Skills à charger
+
+- `whatsapp-evolution-bots` — avant tout chantier touchant le canal WhatsApp
+  (webhooks, envoi, proxy).
+- `python-saas-backends` — avant tout chantier backend structurant (auth,
+  multi-tenant, isolation).
+- `requesting-code-review` — avant chaque push, en complément de la revue
+  Claude Code.
+
 ## État courant (à mettre à jour à chaque session)
 
 - Auth multi-cabinet : **FAIT** — PR #5 (backend) + PR #1 (frontend deploy)
